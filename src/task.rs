@@ -8,7 +8,6 @@ struct InnerState {
     active: Mutex<bool>,
     signal: Condvar,
     interval: AtomicU64,
-    task: fn(),
 }
 
 pub struct PollingTask {
@@ -17,30 +16,29 @@ pub struct PollingTask {
 
 impl PollingTask {
     /// The interval must be expressible as a u64 in milliseconds.
-    pub fn new(interval: Duration, task: fn()) -> Self {
-        let task = Self {
+    pub fn new(interval: Duration, task: Box<dyn Fn() + Send>) -> Self {
+        let polling_task = Self {
             shared_state: Arc::new(InnerState {
                 active: Mutex::new(true),
                 signal: Condvar::new(),
                 interval: AtomicU64::new(u64::try_from(interval.as_millis()).unwrap()),
-                task,
             }),
         };
 
-        let shared_state = task.shared_state.clone();
+        let shared_state = polling_task.shared_state.clone();
 
         thread::spawn(move || {
-            Self::poll(&shared_state);
+            Self::poll(&shared_state, &task);
         });
 
-        task
+        polling_task
     }
 
     pub fn set_polling_rate(&mut self, interval: Duration) {
         self.shared_state.interval.store(u64::try_from(interval.as_millis()).unwrap(), Relaxed);
     }
 
-    fn poll(shared_state: &Arc<InnerState>) {
+    fn poll(shared_state: &Arc<InnerState>, task: &Box<dyn Fn() + Send>) {
         loop {
             let result = shared_state
                 .signal
@@ -55,7 +53,7 @@ impl PollingTask {
                 break;
             }
 
-            (shared_state.task)()
+            (task)()
         }
     }
 }
