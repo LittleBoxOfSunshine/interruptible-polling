@@ -8,3 +8,6 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/LittleBoxOfSunshine/interruptible-polling"
 readme = "README.md"
 keywords = ["poll", "polling", "task"]
+
+[dev-dependencies]
+tokio = { version = "1.29.1", features = ["sync", "macros", "rt"] }

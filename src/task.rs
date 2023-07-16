@@ -42,6 +42,8 @@ impl PollingTask {
 
     fn poll(shared_state: &Arc<InnerState>, task: &Box<dyn Fn() + Send>) {
         loop {
+            (task)();
+
             let result = shared_state
                 .signal
                 .wait_timeout_while(
@@ -54,8 +56,6 @@ impl PollingTask {
             if !result.1.timed_out() {
                 break;
             }
-
-            (task)()
         }
     }
 }
@@ -93,6 +93,9 @@ mod tests {
     fn set_polling_rate() {
         let (counter, task) = get_task_and_timer();
 
+        // The sleeps here are not ideal, but given how simple the test is and small the crate is
+        // in practice this sloppiness doesn't matter.
+
         // Wait for task to actually run
         sleep(Duration::from_millis(50));
 
@@ -105,5 +108,18 @@ mod tests {
         let counter_value = counter.load(SeqCst);
         sleep(Duration::from_millis(50));
         assert_eq!(counter_value, counter.load(SeqCst))
+    }
+
+    #[test]
+    // This is implicitly covered through the set time tests having very large wait periods, but
+    // keeping a dedicated test for clarity and to make the validation explicit.
+    fn early_clean_exit() {
+        let counter = Arc::new(AtomicU64::new(0));
+        let counter_clone = counter.clone();
+
+        let _task = PollingTask::new(Duration::from_secs(5000), Box::new(move || { counter_clone.fetch_add(1, SeqCst); })).unwrap();
+        sleep(Duration::from_millis(50));
+
+        assert_eq!(1, counter.load(SeqCst))
     }
 }
