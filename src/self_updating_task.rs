@@ -1,23 +1,27 @@
-use std::cell::RefCell;
 use std::num::TryFromIntError;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use crate::PollingTask;
 
+// The mutex / option here seems really overkill. Revisit if there's a better Rust way to do this
+// without using unsafe. For now, this is fine as this is an internal detail that can be replaced
+// without breaking changes.
+
 pub struct SelfUpdatingPollingTask {
-    polling_task: Option<PollingTask>
+    polling_task: Arc<Mutex<Option<PollingTask>>>
 }
 
 pub type PollingIntervalSetter = dyn Fn(Duration) -> Result<(), TryFromIntError>;
 
 impl SelfUpdatingPollingTask {
     pub fn new(interval: Duration, task: Box<dyn Fn(&PollingIntervalSetter) + Send>) -> Result<Self, TryFromIntError> {
-        let mut outer_task = SelfUpdatingPollingTask{ polling_task: None };
-        let cell = RefCell::new(outer_task);
+        let outer_task = SelfUpdatingPollingTask{ polling_task: Arc::new(Mutex::new(None)) };
+        let inner_task = outer_task.polling_task.clone();
 
-        let setter = move |duration: Duration| cell.borrow().polling_task.as_ref().unwrap().set_polling_rate(duration);
+        let setter = move |duration: Duration| inner_task.lock().unwrap().as_ref().unwrap().set_polling_rate(duration);
         let wrapper = move || (*task)(&setter);
 
-        outer_task.polling_task = Some(PollingTask::new(interval, Box::new(wrapper))?);
+        outer_task.polling_task.lock().unwrap().replace(PollingTask::new(interval, Box::new(wrapper))?);
 
         Ok(outer_task)
     }
