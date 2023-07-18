@@ -1,29 +1,67 @@
 use std::num::TryFromIntError;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering::Relaxed;
+use std::thread;
 use std::time::Duration;
-use crate::PollingTask;
-
-// The mutex / option here seems really overkill. Revisit if there's a better Rust way to do this
-// without using unsafe. For now, this is fine as this is an internal detail that can be replaced
-// without breaking changes.
+use crate::task::PollingTaskInnerState;
 
 pub struct SelfUpdatingPollingTask {
-    polling_task: Arc<Mutex<Option<PollingTask>>>
+    shared_state: Arc<PollingTaskInnerState>,
 }
 
 pub type PollingIntervalSetter = dyn Fn(Duration) -> Result<(), TryFromIntError>;
 
 impl SelfUpdatingPollingTask {
+    /// The interval must be expressible as a u64 in milliseconds.
     pub fn new(interval: Duration, task: Box<dyn Fn(&PollingIntervalSetter) + Send>) -> Result<Self, TryFromIntError> {
-        let outer_task = SelfUpdatingPollingTask{ polling_task: Arc::new(Mutex::new(None)) };
-        let inner_task = outer_task.polling_task.clone();
+        let polling_task = Self {
+            shared_state: Arc::new(PollingTaskInnerState {
+                active: Mutex::new(true),
+                signal: Condvar::new(),
+                interval: AtomicU64::new(u64::try_from(interval.as_millis())?),
+            }),
+        };
 
-        let setter = move |duration: Duration| inner_task.lock().unwrap().as_ref().unwrap().set_polling_rate(duration);
-        let wrapper = move || (*task)(&setter);
+        let shared_state = polling_task.shared_state.clone();
 
-        outer_task.polling_task.lock().unwrap().replace(PollingTask::new(interval, Box::new(wrapper))?);
+        thread::spawn(move || {
+            Self::poll(&shared_state, &task);
+        });
 
-        Ok(outer_task)
+        Ok(polling_task)
+    }
+
+    fn poll(shared_state: &Arc<PollingTaskInnerState>, task: &Box<dyn Fn(&PollingIntervalSetter) + Send>) {
+        let copy = shared_state.clone();
+        let setter = move |duration: Duration| {
+            copy.interval.store(u64::try_from(duration.as_millis())?, Relaxed);
+            Ok(())
+        };
+
+        loop {
+            (task)(&setter);
+
+            let result = shared_state
+                .signal
+                .wait_timeout_while(
+                    shared_state.active.lock().unwrap(),
+                    Duration::from_millis(shared_state.interval.load(Relaxed)),
+                    |&mut active| active,
+                )
+                .unwrap();
+
+            if !result.1.timed_out() {
+                break;
+            }
+        }
+    }
+}
+
+impl Drop for SelfUpdatingPollingTask {
+    fn drop(&mut self) {
+        *self.shared_state.active.lock().unwrap() = false;
+        self.shared_state.signal.notify_one();
     }
 }
 

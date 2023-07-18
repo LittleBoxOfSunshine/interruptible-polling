@@ -5,21 +5,42 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
-struct InnerState {
-    active: Mutex<bool>,
-    signal: Condvar,
-    interval: AtomicU64,
+macro_rules! wait_with_timeout {
+    ($shared_state:ident, $task_invocation:expr) => {
+        loop {
+            $task_invocation;
+
+            let result = $shared_state
+                .signal
+                .wait_timeout_while(
+                    $shared_state.active.lock().unwrap(),
+                    Duration::from_millis($shared_state.interval.load(Relaxed)),
+                    |&mut active| active,
+                )
+                .unwrap();
+
+            if !result.1.timed_out() {
+                break;
+            }
+        }
+    }
+}
+
+pub(crate) struct PollingTaskInnerState {
+    pub(crate) active: Mutex<bool>,
+    pub(crate) signal: Condvar,
+    pub(crate) interval: AtomicU64,
 }
 
 pub struct PollingTask {
-    shared_state: Arc<InnerState>,
+    shared_state: Arc<PollingTaskInnerState>,
 }
 
 impl PollingTask {
     /// The interval must be expressible as a u64 in milliseconds.
     pub fn new(interval: Duration, task: Box<dyn Fn() + Send>) -> Result<Self, TryFromIntError> {
         let polling_task = Self {
-            shared_state: Arc::new(InnerState {
+            shared_state: Arc::new(PollingTaskInnerState {
                 active: Mutex::new(true),
                 signal: Condvar::new(),
                 interval: AtomicU64::new(u64::try_from(interval.as_millis())?),
@@ -40,23 +61,8 @@ impl PollingTask {
         Ok(())
     }
 
-    fn poll(shared_state: &Arc<InnerState>, task: &Box<dyn Fn() + Send>) {
-        loop {
-            (task)();
-
-            let result = shared_state
-                .signal
-                .wait_timeout_while(
-                    shared_state.active.lock().unwrap(),
-                    Duration::from_millis(shared_state.interval.load(Relaxed)),
-                    |&mut active| active,
-                )
-                .unwrap();
-
-            if !result.1.timed_out() {
-                break;
-            }
-        }
+    fn poll(shared_state: &Arc<PollingTaskInnerState>, task: &Box<dyn Fn() + Send>) {
+        wait_with_timeout! (shared_state, (task)());
     }
 }
 
