@@ -5,6 +5,39 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
+pub(crate) struct PollingTaskInnerState {
+    pub(crate) active: Mutex<bool>,
+    pub(crate) signal: Condvar,
+    pub(crate) interval: AtomicU64,
+}
+
+pub struct PollingTask {
+    shared_state: Arc<PollingTaskInnerState>,
+}
+
+impl PollingTask {
+    /// The interval must be expressible as a u64 in milliseconds.
+    pub fn new(interval: Duration, task: Box<dyn Fn() + Send>) -> Result<Self, TryFromIntError> {
+        new_task!(Self, interval, task)
+    }
+
+    pub fn set_polling_rate(&self, interval: Duration) -> Result<(), TryFromIntError> {
+        self.shared_state.interval.store(u64::try_from(interval.as_millis())?, Relaxed);
+        Ok(())
+    }
+
+    fn poll(shared_state: &Arc<PollingTaskInnerState>, task: &Box<dyn Fn() + Send>) {
+        wait_with_timeout! (shared_state, (task)());
+    }
+}
+
+impl Drop for PollingTask {
+    fn drop(&mut self) {
+        *self.shared_state.active.lock().unwrap() = false;
+        self.shared_state.signal.notify_one();
+    }
+}
+
 macro_rules! wait_with_timeout {
     ($shared_state:ident, $task_invocation:expr) => {
         loop {
@@ -26,52 +59,31 @@ macro_rules! wait_with_timeout {
     }
 }
 
-pub(crate) struct PollingTaskInnerState {
-    pub(crate) active: Mutex<bool>,
-    pub(crate) signal: Condvar,
-    pub(crate) interval: AtomicU64,
-}
+pub(crate) use wait_with_timeout;
 
-pub struct PollingTask {
-    shared_state: Arc<PollingTaskInnerState>,
-}
+macro_rules! new_task {
+    ($task_type:tt, $interval:ident, $task:ident) => {
+        {
+            let polling_task = $task_type {
+                shared_state: Arc::new(PollingTaskInnerState {
+                    active: Mutex::new(true),
+                    signal: Condvar::new(),
+                    interval: AtomicU64::new(u64::try_from($interval.as_millis())?),
+                }),
+            };
 
-impl PollingTask {
-    /// The interval must be expressible as a u64 in milliseconds.
-    pub fn new(interval: Duration, task: Box<dyn Fn() + Send>) -> Result<Self, TryFromIntError> {
-        let polling_task = Self {
-            shared_state: Arc::new(PollingTaskInnerState {
-                active: Mutex::new(true),
-                signal: Condvar::new(),
-                interval: AtomicU64::new(u64::try_from(interval.as_millis())?),
-            }),
-        };
+            let shared_state = polling_task.shared_state.clone();
 
-        let shared_state = polling_task.shared_state.clone();
+            thread::spawn(move || {
+                Self::poll(&shared_state, &$task);
+            });
 
-        thread::spawn(move || {
-            Self::poll(&shared_state, &task);
-        });
-
-        Ok(polling_task)
-    }
-
-    pub fn set_polling_rate(&self, interval: Duration) -> Result<(), TryFromIntError> {
-        self.shared_state.interval.store(u64::try_from(interval.as_millis())?, Relaxed);
-        Ok(())
-    }
-
-    fn poll(shared_state: &Arc<PollingTaskInnerState>, task: &Box<dyn Fn() + Send>) {
-        wait_with_timeout! (shared_state, (task)());
+            Ok(polling_task)
+        }
     }
 }
 
-impl Drop for PollingTask {
-    fn drop(&mut self) {
-        *self.shared_state.active.lock().unwrap() = false;
-        self.shared_state.signal.notify_one();
-    }
-}
+pub(crate) use new_task;
 
 #[cfg(test)]
 mod tests {

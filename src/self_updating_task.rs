@@ -4,7 +4,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering::Relaxed;
 use std::thread;
 use std::time::Duration;
-use crate::task::PollingTaskInnerState;
+use crate::task::{new_task, PollingTaskInnerState, wait_with_timeout};
 
 pub struct SelfUpdatingPollingTask {
     shared_state: Arc<PollingTaskInnerState>,
@@ -15,21 +15,7 @@ pub type PollingIntervalSetter = dyn Fn(Duration) -> Result<(), TryFromIntError>
 impl SelfUpdatingPollingTask {
     /// The interval must be expressible as a u64 in milliseconds.
     pub fn new(interval: Duration, task: Box<dyn Fn(&PollingIntervalSetter) + Send>) -> Result<Self, TryFromIntError> {
-        let polling_task = Self {
-            shared_state: Arc::new(PollingTaskInnerState {
-                active: Mutex::new(true),
-                signal: Condvar::new(),
-                interval: AtomicU64::new(u64::try_from(interval.as_millis())?),
-            }),
-        };
-
-        let shared_state = polling_task.shared_state.clone();
-
-        thread::spawn(move || {
-            Self::poll(&shared_state, &task);
-        });
-
-        Ok(polling_task)
+        new_task!(Self, interval, task)
     }
 
     fn poll(shared_state: &Arc<PollingTaskInnerState>, task: &Box<dyn Fn(&PollingIntervalSetter) + Send>) {
@@ -39,22 +25,7 @@ impl SelfUpdatingPollingTask {
             Ok(())
         };
 
-        loop {
-            (task)(&setter);
-
-            let result = shared_state
-                .signal
-                .wait_timeout_while(
-                    shared_state.active.lock().unwrap(),
-                    Duration::from_millis(shared_state.interval.load(Relaxed)),
-                    |&mut active| active,
-                )
-                .unwrap();
-
-            if !result.1.timed_out() {
-                break;
-            }
-        }
+        wait_with_timeout! (shared_state, (task)(&setter));
     }
 }
 
