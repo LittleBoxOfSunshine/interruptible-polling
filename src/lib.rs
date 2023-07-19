@@ -15,8 +15,6 @@
 //!
 //! If the poll operation is still running, the thread will exit after the closure finishes.
 //!
-//! <br>
-//!
 //! # Examples
 //! - Use [`PollingTask`] to emit a heart beat every 30 seconds.
 //!
