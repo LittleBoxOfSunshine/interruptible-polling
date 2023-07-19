@@ -13,7 +13,8 @@
 //! The intended use case is to offer a RAII container for a polled operation that will interrupt
 //! pending sleeps to allow a low-latency clean exit.
 //!
-//! If the poll operation is still running, the thread will exit after the closure finishes.
+//! If the poll operation is still running, the task drop will join the background thread which will
+//! exit after the closure finishes.
 //!
 //! # Examples
 //! - Use [`PollingTask`] to emit a heart beat every 30 seconds.

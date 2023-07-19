@@ -3,6 +3,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering::Relaxed;
 use std::thread;
+use std::thread::JoinHandle;
 use std::time::Duration;
 use crate::task::{new_task, PollingTaskInnerState, wait_with_timeout};
 
@@ -11,12 +12,13 @@ use crate::task::{new_task, PollingTaskInnerState, wait_with_timeout};
 /// When [`SelfUpdatingPollingTask`] is dropped, the background thread is signaled to perform a clean exit at
 /// the first available opportunity. If the thread is currently sleeping, this will occur almost
 /// immediately. If the closure is still running, it will happen immediately after the closure
-/// finishes.
+/// finishes. The task joins on the background thread as a best effort clean exit.
 ///
 /// Note nothing special is done to try and keep the thread alive longer. If you terminate the
 /// program the default behavior of reaping the thread mid execution will still occur.
 pub struct SelfUpdatingPollingTask {
     shared_state: Arc<PollingTaskInnerState>,
+    background_thread: Option<JoinHandle<()>>
 }
 
 /// Alias for the callback that allows the poll operation to apply the new polling rate back into
@@ -48,6 +50,7 @@ impl Drop for SelfUpdatingPollingTask {
     fn drop(&mut self) {
         *self.shared_state.active.lock().unwrap() = false;
         self.shared_state.signal.notify_one();
+        self.background_thread.take().unwrap().join().unwrap();
     }
 }
 
@@ -68,7 +71,9 @@ mod tests {
         let _task = SelfUpdatingPollingTask::new(Duration::from_millis(0), Box::new(move |setter: &PollingIntervalSetter| {
             counter_clone.fetch_add(1, SeqCst);
             setter(Duration::from_secs(5000)).unwrap();
-            tx.lock().unwrap().take().unwrap().send(true).unwrap();
+            if let Some(tx) = tx.lock().unwrap().take() {
+                tx.send(true).unwrap();
+            }
         })).unwrap();
 
         rx.await.unwrap();

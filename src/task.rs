@@ -3,6 +3,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 pub(crate) struct PollingTaskInnerState {
@@ -16,12 +17,13 @@ pub(crate) struct PollingTaskInnerState {
 /// When [`PollingTask`] is dropped, the background thread is signaled to perform a clean exit at
 /// the first available opportunity. If the thread is currently sleeping, this will occur almost
 /// immediately. If the closure is still running, it will happen immediately after the closure
-/// finishes.
+/// finishes. The task joins on the background thread as a best effort clean exit.
 ///
 /// Note nothing special is done to try and keep the thread alive longer. If you terminate the
 /// program the default behavior of reaping the thread mid execution will still occur.
 pub struct PollingTask {
     shared_state: Arc<PollingTaskInnerState>,
+    background_thread: Option<JoinHandle<()>>
 }
 
 impl PollingTask {
@@ -51,6 +53,7 @@ impl Drop for PollingTask {
     fn drop(&mut self) {
         *self.shared_state.active.lock().unwrap() = false;
         self.shared_state.signal.notify_one();
+        self.background_thread.take().unwrap().join().unwrap();
     }
 }
 
@@ -80,19 +83,20 @@ pub(crate) use wait_with_timeout;
 macro_rules! new_task {
     ($task_type:tt, $interval:ident, $task:ident) => {
         {
-            let polling_task = $task_type {
+            let mut polling_task = $task_type {
                 shared_state: Arc::new(PollingTaskInnerState {
                     active: Mutex::new(true),
                     signal: Condvar::new(),
                     interval: AtomicU64::new(u64::try_from($interval.as_millis())?),
                 }),
+                background_thread: None
             };
 
             let shared_state = polling_task.shared_state.clone();
 
-            thread::spawn(move || {
+            polling_task.background_thread = Some(thread::spawn(move || {
                 Self::poll(&shared_state, &$task);
-            });
+            }));
 
             Ok(polling_task)
         }
@@ -155,5 +159,28 @@ mod tests {
         sleep(Duration::from_millis(50));
 
         assert_eq!(1, counter.load(SeqCst))
+    }
+
+    #[test]
+    fn drop_while_running_blocks() {
+        let (start_tx, start_rx) = tokio::sync::oneshot::channel();
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+        let start_tx = Mutex::new(Some(start_tx));
+        let stop_tx = Mutex::new(Some(stop_tx));
+
+        {
+            let _task = PollingTask::new(Duration::from_secs(5000), Box::new(move || {
+                start_tx.lock().unwrap().take().unwrap().send(()).unwrap();
+                // Lazy, give enough delay to allow signal to propagate.
+                sleep(Duration::from_millis(200));
+                stop_tx.lock().unwrap().take().unwrap().send(()).unwrap();
+            })).unwrap();
+
+            // Wait until thread reports alive, then drop
+            start_rx.blocking_recv().unwrap();
+        }
+
+        // Background thread will still be alive, send signal to allow blocked
+        stop_rx.blocking_recv().unwrap();
     }
 }
