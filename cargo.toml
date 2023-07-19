@@ -1,7 +1,7 @@
 [package]
 name = "interruptible_polling"
 description = "General purpose polling tasks with RAII-driven fast clean exits"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 authors = ["Chris Henk <chris.henk@unobtainium.software"]
 license = "MIT OR Apache-2.0"
