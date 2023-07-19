@@ -11,16 +11,31 @@ pub(crate) struct PollingTaskInnerState {
     pub(crate) interval: AtomicU64,
 }
 
+/// General purpose RAII polling task that executes a closure with a given frequency.
+///
+/// When [`PollingTask`] is dropped, the background thread is signaled to perform a clean exit at
+/// the first available opportunity. If the thread is currently sleeping, this will occur almost
+/// immediately. If the closure is still running, it will happen immediately after the closure
+/// finishes.
+///
+/// Note nothing special is done to try and keep the thread alive longer. If you terminate the
+/// program the default behavior of reaping the thread mid execution will still occur.
 pub struct PollingTask {
     shared_state: Arc<PollingTaskInnerState>,
 }
 
 impl PollingTask {
-    /// The interval must be expressible as a u64 in milliseconds.
+    /// Creates a new background thread that immediately executes the given task.
+    ///
+    /// * `interval` The interval to poll at. Note it must be expressible as a u64 in milliseconds.
+    /// * `task` The closure to execute at every poll.
     pub fn new(interval: Duration, task: Box<dyn Fn() + Send>) -> Result<Self, TryFromIntError> {
         new_task!(Self, interval, task)
     }
 
+    /// Update the delay between poll events. Applied on the next iteration.
+    ///
+    /// * `interval` The interval to poll at. Note it must be expressible as a u64 in milliseconds.
     pub fn set_polling_rate(&self, interval: Duration) -> Result<(), TryFromIntError> {
         self.shared_state.interval.store(u64::try_from(interval.as_millis())?, Relaxed);
         Ok(())
@@ -32,6 +47,7 @@ impl PollingTask {
 }
 
 impl Drop for PollingTask {
+    /// Signals the background thread that it should exit at first available opportunity.
     fn drop(&mut self) {
         *self.shared_state.active.lock().unwrap() = false;
         self.shared_state.signal.notify_one();

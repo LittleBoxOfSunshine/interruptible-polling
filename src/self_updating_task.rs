@@ -6,14 +6,28 @@ use std::thread;
 use std::time::Duration;
 use crate::task::{new_task, PollingTaskInnerState, wait_with_timeout};
 
+/// Executes a closure with a given frequency where the closure also apply changes to the polling rate.
+///
+/// When [`SelfUpdatingPollingTask`] is dropped, the background thread is signaled to perform a clean exit at
+/// the first available opportunity. If the thread is currently sleeping, this will occur almost
+/// immediately. If the closure is still running, it will happen immediately after the closure
+/// finishes.
+///
+/// Note nothing special is done to try and keep the thread alive longer. If you terminate the
+/// program the default behavior of reaping the thread mid execution will still occur.
 pub struct SelfUpdatingPollingTask {
     shared_state: Arc<PollingTaskInnerState>,
 }
 
+/// Alias for the callback that allows the poll operation to apply the new polling rate back into
+/// the [`SelfUpdatingPollingTask`]
 pub type PollingIntervalSetter = dyn Fn(Duration) -> Result<(), TryFromIntError>;
 
 impl SelfUpdatingPollingTask {
-    /// The interval must be expressible as a u64 in milliseconds.
+    /// Creates a new background thread that immediately executes the given task.
+    ///
+    /// * `interval` The interval to poll at. Note it must be expressible as a u64 in milliseconds.
+    /// * `task` The closure to execute at every poll.
     pub fn new(interval: Duration, task: Box<dyn Fn(&PollingIntervalSetter) + Send>) -> Result<Self, TryFromIntError> {
         new_task!(Self, interval, task)
     }
@@ -30,6 +44,7 @@ impl SelfUpdatingPollingTask {
 }
 
 impl Drop for SelfUpdatingPollingTask {
+    /// Signals the background thread that it should exit at first available opportunity.
     fn drop(&mut self) {
         *self.shared_state.active.lock().unwrap() = false;
         self.shared_state.signal.notify_one();
