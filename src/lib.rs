@@ -46,7 +46,7 @@
 //!
 //!           // Do other work with config
 //!
-//!           setter(Duration::from_secs(config["polling_interval"].as_u64().unwrap()))
+//!           setter(Duration::from_secs(config["pollingInterval"].as_u64().unwrap()))
 //!               .expect("Polling interval isn't u64 convertable");
 //!       }
 //!   ));
