@@ -12,6 +12,16 @@ pub(crate) struct PollingTaskInnerState {
     pub(crate) interval: AtomicU64,
 }
 
+impl PollingTaskInnerState {
+    pub(crate) fn new(interval: Duration) -> Result<Arc<Self>, TryFromIntError> {
+        Ok(Arc::new(PollingTaskInnerState {
+            active: Mutex::new(true),
+            signal: Condvar::new(),
+            interval: AtomicU64::new(u64::try_from(interval.as_millis())?),
+        }))
+    }
+}
+
 /// General purpose RAII polling task that executes a closure with a given frequency.
 ///
 /// When [`PollingTask`] is dropped, the background thread is signaled to perform a clean exit at
@@ -26,13 +36,40 @@ pub struct PollingTask {
     background_thread: Option<JoinHandle<()>>
 }
 
+/// Basic closure type for poll operation.
+pub type UnitTask = dyn Fn() + Send;
+
+/// Closure can periodically check if the task is still active to respect attempts to clean early
+/// exit. Suitable for long running or iterative poll operations.
+pub type CheckerTask = dyn Fn(&StillActiveChecker) + Send;
+
+/// Closure to check active status without exposing the underlying mutex.
+pub type StillActiveChecker = dyn Fn() -> bool;
+
+pub(crate) enum Task {
+    Unit(Box<UnitTask>),
+    WithChecker(Box<CheckerTask>),
+}
+
 impl PollingTask {
     /// Creates a new background thread that immediately executes the given task.
     ///
     /// * `interval` The interval to poll at. Note it must be expressible as a u64 in milliseconds.
     /// * `task` The closure to execute at every poll.
-    pub fn new(interval: Duration, task: Box<dyn Fn() + Send>) -> Result<Self, TryFromIntError> {
-        new_task!(Self, interval, task)
+    pub fn new(interval: Duration, task: Box<UnitTask>) -> Result<Self, TryFromIntError> {
+        let shared_state = PollingTaskInnerState::new(interval)?;
+        let task = Task::Unit(task);
+        new_task!(Self, shared_state, task)
+    }
+
+    /// Creates a new background thread that immediately executes the given task.
+    ///
+    /// * `interval` The interval to poll at. Note it must be expressible as a u64 in milliseconds.
+    /// * `task` The closure to execute at every poll.
+    pub fn new_with_checker(interval: Duration, task: Box<CheckerTask>) -> Result<Self, TryFromIntError> {
+        let shared_state = PollingTaskInnerState::new(interval)?;
+        let task = Task::WithChecker(task);
+        new_task!(Self, shared_state, task)
     }
 
     /// Update the delay between poll events. Applied on the next iteration.
@@ -81,21 +118,26 @@ macro_rules! wait_with_timeout {
 pub(crate) use wait_with_timeout;
 
 macro_rules! new_task {
-    ($task_type:tt, $interval:ident, $task:ident) => {
+    ($task_type:tt, $shared_state:ident, $task:ident) => {
         {
             let mut polling_task = $task_type {
-                shared_state: Arc::new(PollingTaskInnerState {
-                    active: Mutex::new(true),
-                    signal: Condvar::new(),
-                    interval: AtomicU64::new(u64::try_from($interval.as_millis())?),
-                }),
+                shared_state: $shared_state,
                 background_thread: None
             };
 
             let shared_state = polling_task.shared_state.clone();
 
+            let task = match $task {
+                Task::Unit(task) => task,
+                Task::WithChecker(task) => {
+                    let checker_shared_state = shared_state.clone();
+                    let checker = move || { *checker_shared_state.active.lock().unwrap() };
+                    Box::new(move || { task(&checker) })
+                }
+            };
+
             polling_task.background_thread = Some(thread::spawn(move || {
-                Self::poll(&shared_state, &$task);
+                Self::poll(&shared_state, &task)
             }));
 
             Ok(polling_task)

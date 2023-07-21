@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
-use crate::task::{new_task, PollingTaskInnerState, wait_with_timeout};
+use crate::task::{new_task, PollingTaskInnerState, wait_with_timeout, Task, CheckerTask, StillActiveChecker};
 
 /// Executes a closure with a given frequency where the closure also apply changes to the polling rate.
 ///
@@ -31,17 +31,40 @@ impl SelfUpdatingPollingTask {
     /// * `interval` The interval to poll at. Note it must be expressible as a u64 in milliseconds.
     /// * `task` The closure to execute at every poll.
     pub fn new(interval: Duration, task: Box<dyn Fn(&PollingIntervalSetter) + Send>) -> Result<Self, TryFromIntError> {
-        new_task!(Self, interval, task)
-    }
+        let shared_state = PollingTaskInnerState::new(interval)?;
 
-    fn poll(shared_state: &Arc<PollingTaskInnerState>, task: &Box<dyn Fn(&PollingIntervalSetter) + Send>) {
         let copy = shared_state.clone();
         let setter = move |duration: Duration| {
             copy.interval.store(u64::try_from(duration.as_millis())?, Relaxed);
             Ok(())
         };
+        let task = Box::new(move || (task)(&setter));
 
-        wait_with_timeout! (shared_state, (task)(&setter));
+        let task = Task::Unit(task);
+
+        new_task!(Self, shared_state, task)
+    }
+
+    /// Creates a new background thread that immediately executes the given task.
+    ///
+    /// * `interval` The interval to poll at. Note it must be expressible as a u64 in milliseconds.
+    /// * `task` The closure to execute at every poll.
+    pub fn new_with_checker(interval: Duration, task: Box<dyn Fn(&PollingIntervalSetter, &StillActiveChecker) + Send>) -> Result<Self, TryFromIntError> {
+        let shared_state = PollingTaskInnerState::new(interval)?;
+
+        let copy = shared_state.clone();
+        let setter = move |duration: Duration| {
+            copy.interval.store(u64::try_from(duration.as_millis())?, Relaxed);
+            Ok(())
+        };
+        let task = Box::new(move |checker: &StillActiveChecker| (task)(&setter, checker));
+
+        let task = Task::WithChecker(task);
+        new_task!(Self, shared_state, task)
+    }
+
+    fn poll(shared_state: &Arc<PollingTaskInnerState>, task: &Box<dyn Fn() + Send>) {
+        wait_with_timeout! (shared_state, (task)());
     }
 }
 
