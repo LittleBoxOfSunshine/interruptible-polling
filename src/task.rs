@@ -12,8 +12,6 @@ pub(crate) struct PollingTaskInnerState {
     pub(crate) interval: AtomicU64,
 }
 
-const X: u64 = 5;
-
 /// General purpose RAII polling task that executes a closure with a given frequency.
 ///
 /// When [`PollingTask`] is dropped, the background thread is signaled to perform a clean exit at
