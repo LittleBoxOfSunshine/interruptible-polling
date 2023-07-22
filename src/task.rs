@@ -253,4 +253,38 @@ mod tests {
         // Background thread will still be alive, send signal to allow blocked
         stop_rx.blocking_recv().unwrap();
     }
+
+    #[tokio::test]
+    async fn long_poll_exits_early() {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let tx = Mutex::new(Some(tx));
+        let (tx_exit, rx_exit) = tokio::sync::oneshot::channel();
+        let tx_exit = Mutex::new(Some(tx_exit));
+
+        {
+            let _task = PollingTask::new_with_checker(
+                Duration::from_millis(0),
+                Box::new(move |checker: &StillActiveChecker| {
+                    if let Some(tx) = tx.lock().unwrap().take() {
+                        tx.send(true).unwrap();
+
+                        loop {
+                            if !checker() {
+                                break;
+                            }
+                        }
+
+                        tx_exit.lock().unwrap().take().unwrap().send(true).unwrap();
+                    }
+                }),
+            )
+            .unwrap();
+
+            // Guarantee we polled at least once
+            rx.await.unwrap();
+        }
+
+        // Ensure the long poll exits by signal, not by test going out of scope.
+        rx_exit.await.unwrap();
+    }
 }

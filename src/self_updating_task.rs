@@ -114,4 +114,40 @@ mod tests {
         rx.await.unwrap();
         assert_eq!(counter.load(SeqCst), 1);
     }
+
+    #[tokio::test]
+    async fn slow_poll_exits_early() {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let tx = Mutex::new(Some(tx));
+        let (tx_exit, rx_exit) = tokio::sync::oneshot::channel();
+        let tx_exit = Mutex::new(Some(tx_exit));
+
+        {
+            let _task = SelfUpdatingPollingTask::new_with_checker(
+                Duration::from_millis(0),
+                Box::new(
+                    move |setter: &PollingIntervalSetter, checker: &StillActiveChecker| {
+                        tx.lock().unwrap().take().unwrap().send(true).unwrap();
+
+                        loop {
+                            if !checker() {
+                                break;
+                            }
+                        }
+
+                        // Prevent issues cause by cycling second time.
+                        setter(Duration::from_secs(5000)).unwrap();
+                        tx_exit.lock().unwrap().take().unwrap().send(true).unwrap();
+                    },
+                ),
+            )
+            .unwrap();
+
+            // Guarantee we polled at least once
+            rx.await.unwrap();
+        }
+
+        // Ensure the long poll exits by signal, not by test going out of scope.
+        rx_exit.await.unwrap();
+    }
 }
