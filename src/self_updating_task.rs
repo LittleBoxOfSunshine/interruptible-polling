@@ -37,6 +37,9 @@ macro_rules! new_interval_setter {
     }};
 }
 
+pub type IntervalSettingTask = dyn Fn(&PollingIntervalSetter) + Send;
+pub type IntervalSettingTaskWithChecker = dyn Fn(&PollingIntervalSetter, &StillActiveChecker) + Send;
+
 impl SelfUpdatingPollingTask {
     /// Creates a new background thread that immediately executes the given task.
     ///
@@ -44,7 +47,7 @@ impl SelfUpdatingPollingTask {
     /// * `task` The closure to execute at every poll.
     pub fn new(
         interval: Duration,
-        task: Box<dyn Fn(&PollingIntervalSetter) + Send>,
+        task: Box<IntervalSettingTask>,
     ) -> Result<Self, TryFromIntError> {
         let shared_state = PollingTaskInnerState::new(interval)?;
         let setter = new_interval_setter!(shared_state);
@@ -63,7 +66,7 @@ impl SelfUpdatingPollingTask {
     /// you can assert if the managed task is active to early exit during a clean exit.
     pub fn new_with_checker(
         interval: Duration,
-        task: Box<dyn Fn(&PollingIntervalSetter, &StillActiveChecker) + Send>,
+        task: Box<IntervalSettingTaskWithChecker>,
     ) -> Result<Self, TryFromIntError> {
         let shared_state = PollingTaskInnerState::new(interval)?;
         let setter = new_interval_setter!(shared_state);
@@ -73,7 +76,7 @@ impl SelfUpdatingPollingTask {
         new_task!(Self, shared_state, task)
     }
 
-    fn poll(shared_state: &Arc<PollingTaskInnerState>, task: &Box<dyn Fn() + Send>) {
+    fn poll(shared_state: &Arc<PollingTaskInnerState>, task: &(dyn Fn() + Send)) {
         wait_with_timeout!(shared_state, task);
     }
 }

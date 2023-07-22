@@ -88,7 +88,7 @@ impl PollingTask {
         Ok(())
     }
 
-    fn poll(shared_state: &Arc<PollingTaskInnerState>, task: &Box<dyn Fn() + Send>) {
+    fn poll(shared_state: &Arc<PollingTaskInnerState>, task: &(dyn Fn() + Send)) {
         wait_with_timeout!(shared_state, task);
     }
 }
