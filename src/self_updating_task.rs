@@ -38,7 +38,8 @@ macro_rules! new_interval_setter {
 }
 
 pub type IntervalSettingTask = dyn Fn(&PollingIntervalSetter) + Send;
-pub type IntervalSettingTaskWithChecker = dyn Fn(&PollingIntervalSetter, &StillActiveChecker) + Send;
+pub type IntervalSettingTaskWithChecker =
+    dyn Fn(&PollingIntervalSetter, &StillActiveChecker) + Send;
 
 impl SelfUpdatingPollingTask {
     /// Creates a new background thread that immediately executes the given task.
