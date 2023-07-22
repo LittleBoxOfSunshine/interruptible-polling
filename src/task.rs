@@ -265,7 +265,9 @@ mod tests {
             let _task = PollingTask::new_with_checker(
                 Duration::from_millis(0),
                 Box::new(move |checker: &StillActiveChecker| {
-                    if let Some(tx) = tx.lock().unwrap().take() {
+                    if let Some(tx
+
+                    ) = tx.lock().unwrap().take() {
                         tx.send(true).unwrap();
 
                         loop {
