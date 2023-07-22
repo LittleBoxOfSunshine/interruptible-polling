@@ -33,7 +33,7 @@ impl PollingTaskInnerState {
 /// program the default behavior of reaping the thread mid execution will still occur.
 pub struct PollingTask {
     shared_state: Arc<PollingTaskInnerState>,
-    background_thread: Option<JoinHandle<()>>
+    background_thread: Option<JoinHandle<()>>,
 }
 
 /// Basic closure type for poll operation.
@@ -65,8 +65,14 @@ impl PollingTask {
     /// Creates a new background thread that immediately executes the given task.
     ///
     /// * `interval` The interval to poll at. Note it must be expressible as a u64 in milliseconds.
-    /// * `task` The closure to execute at every poll.
-    pub fn new_with_checker(interval: Duration, task: Box<CheckerTask>) -> Result<Self, TryFromIntError> {
+    /// * `task` The closure to execute at every poll. This closure gets access to another function that can assert if the managed task is still active.
+    ///
+    /// If your task is long running or has iterations (say updating 10 cache entries sequentially),
+    /// you can assert if the managed task is active to early exit during a clean exit.
+    pub fn new_with_checker(
+        interval: Duration,
+        task: Box<CheckerTask>,
+    ) -> Result<Self, TryFromIntError> {
         let shared_state = PollingTaskInnerState::new(interval)?;
         let task = Task::WithChecker(task);
         new_task!(Self, shared_state, task)
@@ -76,28 +82,38 @@ impl PollingTask {
     ///
     /// * `interval` The interval to poll at. Note it must be expressible as a u64 in milliseconds.
     pub fn set_polling_rate(&self, interval: Duration) -> Result<(), TryFromIntError> {
-        self.shared_state.interval.store(u64::try_from(interval.as_millis())?, Relaxed);
+        self.shared_state
+            .interval
+            .store(u64::try_from(interval.as_millis())?, Relaxed);
         Ok(())
     }
 
     fn poll(shared_state: &Arc<PollingTaskInnerState>, task: &Box<dyn Fn() + Send>) {
-        wait_with_timeout! (shared_state, (task)());
+        wait_with_timeout!(shared_state, task);
     }
 }
 
 impl Drop for PollingTask {
     /// Signals the background thread that it should exit at first available opportunity.
     fn drop(&mut self) {
-        *self.shared_state.active.lock().unwrap() = false;
-        self.shared_state.signal.notify_one();
-        self.background_thread.take().unwrap().join().unwrap();
+        drop_task!(self);
     }
 }
 
+macro_rules! drop_task {
+    ($self:ident) => {
+        *$self.shared_state.active.lock().unwrap() = false;
+        $self.shared_state.signal.notify_one();
+        $self.background_thread.take().unwrap().join().unwrap();
+    };
+}
+
+pub(crate) use drop_task;
+
 macro_rules! wait_with_timeout {
-    ($shared_state:ident, $task_invocation:expr) => {
+    ($shared_state:ident, $task:ident) => {
         loop {
-            $task_invocation;
+            ($task)();
 
             let result = $shared_state
                 .signal
@@ -112,46 +128,43 @@ macro_rules! wait_with_timeout {
                 break;
             }
         }
-    }
+    };
 }
 
 pub(crate) use wait_with_timeout;
 
 macro_rules! new_task {
-    ($task_type:tt, $shared_state:ident, $task:ident) => {
-        {
-            let mut polling_task = $task_type {
-                shared_state: $shared_state,
-                background_thread: None
-            };
+    ($task_type:tt, $shared_state:ident, $task:ident) => {{
+        let mut polling_task = $task_type {
+            shared_state: $shared_state,
+            background_thread: None,
+        };
 
-            let shared_state = polling_task.shared_state.clone();
+        let shared_state = polling_task.shared_state.clone();
 
-            let task = match $task {
-                Task::Unit(task) => task,
-                Task::WithChecker(task) => {
-                    let checker_shared_state = shared_state.clone();
-                    let checker = move || { *checker_shared_state.active.lock().unwrap() };
-                    Box::new(move || { task(&checker) })
-                }
-            };
+        let task = match $task {
+            Task::Unit(task) => task,
+            Task::WithChecker(task) => {
+                let checker_shared_state = shared_state.clone();
+                let checker = move || *checker_shared_state.active.lock().unwrap();
+                Box::new(move || task(&checker))
+            }
+        };
 
-            polling_task.background_thread = Some(thread::spawn(move || {
-                Self::poll(&shared_state, &task)
-            }));
+        polling_task.background_thread =
+            Some(thread::spawn(move || Self::poll(&shared_state, &task)));
 
-            Ok(polling_task)
-        }
-    }
+        Ok(polling_task)
+    }};
 }
 
 pub(crate) use new_task;
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use std::sync::atomic::Ordering::SeqCst;
     use std::thread::sleep;
-    use super::*;
 
     #[test]
     fn poll() {
@@ -165,7 +178,12 @@ mod tests {
         let counter = Arc::new(AtomicU64::new(0));
         let counter_clone = counter.clone();
 
-        let task = PollingTask::new(Duration::from_millis(1), Box::new(move || { counter_clone.fetch_add(1, SeqCst); }));
+        let task = PollingTask::new(
+            Duration::from_millis(1),
+            Box::new(move || {
+                counter_clone.fetch_add(1, SeqCst);
+            }),
+        );
         (counter, task.unwrap())
     }
 
@@ -197,7 +215,13 @@ mod tests {
         let counter = Arc::new(AtomicU64::new(0));
         let counter_clone = counter.clone();
 
-        let _task = PollingTask::new(Duration::from_secs(5000), Box::new(move || { counter_clone.fetch_add(1, SeqCst); })).unwrap();
+        let _task = PollingTask::new(
+            Duration::from_secs(5000),
+            Box::new(move || {
+                counter_clone.fetch_add(1, SeqCst);
+            }),
+        )
+        .unwrap();
         sleep(Duration::from_millis(50));
 
         assert_eq!(1, counter.load(SeqCst))
@@ -211,12 +235,16 @@ mod tests {
         let stop_tx = Mutex::new(Some(stop_tx));
 
         {
-            let _task = PollingTask::new(Duration::from_secs(5000), Box::new(move || {
-                start_tx.lock().unwrap().take().unwrap().send(()).unwrap();
-                // Lazy, give enough delay to allow signal to propagate.
-                sleep(Duration::from_millis(200));
-                stop_tx.lock().unwrap().take().unwrap().send(()).unwrap();
-            })).unwrap();
+            let _task = PollingTask::new(
+                Duration::from_secs(5000),
+                Box::new(move || {
+                    start_tx.lock().unwrap().take().unwrap().send(()).unwrap();
+                    // Lazy, give enough delay to allow signal to propagate.
+                    sleep(Duration::from_millis(200));
+                    stop_tx.lock().unwrap().take().unwrap().send(()).unwrap();
+                }),
+            )
+            .unwrap();
 
             // Wait until thread reports alive, then drop
             start_rx.blocking_recv().unwrap();
