@@ -52,10 +52,45 @@
 //!       }
 //!   ));
 //!   ```
+//!
+//! - If your poll operation is long lived or internally iterative, there are opportunities to assert
+//!   if the task is still active to allow the blocked clean exit to occur faster. If you create the
+//!   task with [`PollingTask::new_with_checker`] or [`SelfUpdatingPollingTask::new_with_checker`]
+//!   your closure will receive a lookup function to peek if the managed task is still active. The
+//!   type alias [`StillActiveChecker`] defines the signature of the lookup function.
+//!
+//! ```
+//!  use interruptible_polling::{PollingTask, StillActiveChecker};
+//!  use std::time::Duration;
+//!
+//!  let task = PollingTask::new_with_checker(
+//!      Duration::from_secs(30),
+//!      Box::new(|checker: &StillActiveChecker|
+//!  {
+//!      let keys = vec![1 ,2, 3];
+//!
+//!      for key in keys {
+//!          // Early exit if signaled. The task will not poll again either way, but you have
+//!          // returned control to the parent task earlier.
+//!          if !checker() {
+//!              break;
+//!          }
+//!
+//!          // Some long or potentially long operation such as a synchronous web request.
+//!      }
+//!  }));
+//! ```
+//!
 
 mod self_updating_task;
 mod task;
 
+pub use self_updating_task::IntervalSettingTask;
+pub use self_updating_task::IntervalSettingTaskWithChecker;
 pub use self_updating_task::PollingIntervalSetter;
 pub use self_updating_task::SelfUpdatingPollingTask;
+
+pub use task::CheckerTask;
 pub use task::PollingTask;
+pub use task::StillActiveChecker;
+pub use task::UnitTask;
