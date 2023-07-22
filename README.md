@@ -4,6 +4,8 @@
 
 General purpose polling tasks with RAII-driven fast clean exits.
 
+See [docs.rs](https://docs.rs/interruptible_polling) for full details.
+
 ## License
 
 This project is licensed under either of
