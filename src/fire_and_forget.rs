@@ -20,8 +20,7 @@ pub fn fire_and_forget_polling_task<F>(interval: Duration, task: F)
 }
 
 struct Wrapper {
-    ptr: *mut u64,
-    wut: i64
+    ptr: *mut Duration
 }
 
 struct Wrapper2 {
@@ -36,31 +35,22 @@ pub fn self_updating_fire_and_forget_polling_task<F>(interval: Duration, task: F
     where
         F: Fn(&dyn Fn(Duration)) + Send + 'static
 {
-    let mut interval = Box::new(interval.as_secs());
-    let ptr= &mut *interval as *mut u64;
-    let ptr = Wrapper{ptr, wut: 0};
-    //let test = UnsafeCell::new(interval);
-    //let mut ptr = Wrapper{ptr};
-    //let pin = Pin::new(interval);
-    //let interval = Arc::new(RefCell::new(interval));
-    //let mut interval_clone = interval.clone();
-    let setter = move |duration: Duration| unsafe {
-        let _ = ptr.wut;
-        *(ptr.ptr) = duration.as_secs();
+    let mut interval = Box::new(interval);
+    let ptr= &mut *interval as *mut Duration;
+    let ptr = Wrapper{ptr};
 
-        //Ok(())
+    let setter = move |duration: Duration| unsafe {
+        *(ptr.ptr) = duration;
     };
 
     let setter = Wrapper2 {f: Box::new(setter) };
 
-        thread::spawn(move || unsafe {
+        thread::spawn(move || {
             let setter = setter;
             loop {
                 task(&*setter.f);
 
-                //let test = &mut *interval as *mut u64;
-
-                thread::sleep(Duration::from_secs(*interval));
+                thread::sleep(*interval);
             }
         });
 }
