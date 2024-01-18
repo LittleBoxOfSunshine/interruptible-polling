@@ -77,4 +77,23 @@ mod tests {
         assert!(counter.load(SeqCst) > 1);
     }
 
+    #[test]
+    fn self_updating_polls_and_can_exit() {
+        let counter = Arc::new(AtomicU64::new(0));
+        let counter_clone = counter.clone();
+
+        self_updating_fire_and_forget_polling_task(Duration::from_millis(10), move |setter: &dyn Fn(Duration)| {
+            counter_clone.fetch_add(1, SeqCst);
+            setter(Duration::from_millis(0));
+
+            if counter_clone.load(SeqCst) == 100 {
+                setter(Duration::from_secs(1000000));
+            }
+        });
+
+        sleep(Duration::from_millis(500));
+
+        assert_eq!(100, counter.load(SeqCst));
+    }
+
 }
