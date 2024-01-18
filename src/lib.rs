@@ -81,9 +81,18 @@
 //!  }));
 //! ```
 //!
+//! # Fire and Forget
+//! For convenience, if you also need to run polling threads that don't require clean exits, fire and forget can be
+//! enabled. This is gated behind a feature to encourage use of the primary abstractions. It's not hard to make a
+//! polling thread, so typical crate users are here for the clean exit constructs. However, some projects need both.
+//! If you need both, enable the feature to make both available. By default it's disabled.
+//!
+//!
 
 mod self_updating_task;
 mod task;
+mod fire_and_forget;
+mod self_updating_fire_and_forget;
 
 pub use self_updating_task::IntervalSettingTask;
 pub use self_updating_task::IntervalSettingTaskWithChecker;
