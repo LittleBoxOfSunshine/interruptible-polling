@@ -89,10 +89,10 @@
 //!
 //!
 
-mod self_updating_task;
-mod task;
 mod fire_and_forget;
 mod self_updating_fire_and_forget;
+mod self_updating_task;
+mod task;
 
 pub use self_updating_task::IntervalSettingTask;
 pub use self_updating_task::IntervalSettingTaskWithChecker;
