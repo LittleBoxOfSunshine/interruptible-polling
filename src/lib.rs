@@ -9,7 +9,7 @@
 //! This library provides [`PollingTask`] and [`SelfUpdatingPollingTask`] structs for scheduling a
 //! closure to execute as a recurring task.
 //!
-//! It is common for a service to have long lived polling operations for the life of the process.
+//! It is common for a service to have long-lived polling operations for the life of the process.
 //! The intended use case is to offer a RAII container for a polled operation that will interrupt
 //! pending sleeps to allow a low-latency clean exit.
 //!
@@ -53,7 +53,7 @@
 //!   ));
 //!   ```
 //!
-//! - If your poll operation is long lived or internally iterative, there are opportunities to assert
+//! - If your poll operation is long-lived or internally iterative, there are opportunities to assert
 //!   if the task is still active to allow the blocked clean exit to occur faster. If you create the
 //!   task with [`PollingTask::new_with_checker`] or [`SelfUpdatingPollingTask::new_with_checker`]
 //!   your closure will receive a lookup function to peek if the managed task is still active. The
@@ -82,16 +82,22 @@
 //! ```
 //!
 //! # Fire and Forget
-//! For convenience, if you also need to run polling threads that don't require clean exits, fire and forget can be
-//! enabled. This is gated behind a feature to encourage use of the primary abstractions. It's not hard to make a
-//! polling thread, so typical crate users are here for the clean exit constructs. However, some projects need both.
-//! If you need both, enable the feature to make both available. By default it's disabled.
 //!
+//! For convenience, if you also need to run polling threads that don't require clean exits, fire and forget can be
+//! enabled. This is gated behind feature [`fire-forget`] to encourage use of the primary abstractions. It's not hard to make a
+//! polling thread, so typical crate users are here for the clean exit constructs. However, some projects need both.
+//! If you need both, enable the feature to make both available. By default, it's disabled.
 //!
 
+#[cfg(feature = "fire-forget")]
 mod fire_and_forget;
 mod self_updating_task;
 mod task;
+
+#[cfg(feature = "fire-forget")]
+pub use fire_and_forget::fire_and_forget_polling_task;
+#[cfg(feature = "fire-forget")]
+pub use fire_and_forget::self_updating_fire_and_forget_polling_task;
 
 pub use self_updating_task::IntervalSettingTask;
 pub use self_updating_task::IntervalSettingTaskWithChecker;
