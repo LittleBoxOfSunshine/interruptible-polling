@@ -30,7 +30,7 @@ impl PollingTaskInnerState {
 /// finishes. The task joins on the background thread as a best effort clean exit.
 ///
 /// Note nothing special is done to try and keep the thread alive longer. If you terminate the
-/// program the default behavior of reaping the thread mid execution will still occur.
+/// program the default behavior of reaping the thread mid-execution will still occur.
 pub struct PollingTask {
     shared_state: Arc<PollingTaskInnerState>,
     background_thread: Option<JoinHandle<()>>,
@@ -40,7 +40,7 @@ pub struct PollingTask {
 pub type UnitTask = dyn Fn() + Send;
 
 /// Closure can periodically check if the task is still active to respect attempts to clean early
-/// exit. Suitable for long running or iterative poll operations.
+/// exit. Suitable for long-running or iterative poll operations.
 pub type CheckerTask = dyn Fn(&StillActiveChecker) + Send;
 
 /// Closure to check active status without exposing the underlying mutex.
@@ -67,7 +67,7 @@ impl PollingTask {
     /// * `interval` The interval to poll at. Note it must be expressible as a u64 in milliseconds.
     /// * `task` The closure to execute at every poll. This closure gets access to another function that can assert if the managed task is still active.
     ///
-    /// If your task is long running or has iterations (say updating 10 cache entries sequentially),
+    /// If your task is long-running or has iterations (say updating 10 cache entries sequentially),
     /// you can assert if the managed task is active to early exit during a clean exit.
     pub fn new_with_checker(
         interval: Duration,
