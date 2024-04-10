@@ -15,39 +15,16 @@ where
     });
 }
 
-struct DurationWrapper {
-    ptr: *mut Duration,
-}
-
-struct SetterWrapper {
-    setter: Box<dyn Fn(Duration)>,
-}
-
-unsafe impl Send for DurationWrapper {}
-unsafe impl Send for SetterWrapper {}
-
 pub fn self_updating_fire_and_forget_polling_task<F>(interval: Duration, task: F)
 where
-    F: Fn(&dyn Fn(Duration)) + Send + 'static,
+    F: Fn(&mut Duration) + Send + 'static,
 {
-    let mut interval = Box::new(interval);
-    let ptr = &mut *interval as *mut Duration;
-    let ptr = DurationWrapper { ptr };
-
-    let setter = move |duration: Duration| unsafe {
-        *(ptr.ptr) = duration;
-    };
-
-    let setter = SetterWrapper {
-        setter: Box::new(setter),
-    };
-
     thread::spawn(move || {
-        let setter = setter;
+        let mut interval = interval;
         loop {
-            task(&*setter.setter);
+            task(&mut interval);
 
-            thread::sleep(*interval);
+            thread::sleep(interval);
         }
     });
 }
@@ -81,12 +58,12 @@ mod tests {
 
         self_updating_fire_and_forget_polling_task(
             Duration::from_millis(10),
-            move |setter: &dyn Fn(Duration)| {
+            move |interval: &mut Duration| {
                 counter_clone.fetch_add(1, SeqCst);
-                setter(Duration::from_millis(0));
+                *interval = Duration::from_millis(0);
 
                 if counter_clone.load(SeqCst) == 100 {
-                    setter(Duration::from_secs(1000000));
+                    *interval = Duration::from_secs(1000000);
                 }
             },
         );
