@@ -8,6 +8,9 @@ where
     thread::spawn(move || loop {
         task();
 
+        // There's no need to support a fast exit here, because there is no handle head for this
+        // thread. Instead, we rely on that rust will kill the thread when the exe exits. This is
+        // safe, because if a clean exit was needed the other offerings of the crate would be used.
         thread::sleep(interval);
     });
 }
