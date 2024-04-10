@@ -11,10 +11,10 @@ use std::time::Duration;
 /// When [`SelfUpdatingPollingTask`] is dropped, the background thread is signaled to perform a clean exit at
 /// the first available opportunity. If the thread is currently sleeping, this will occur almost
 /// immediately. If the closure is still running, it will happen immediately after the closure
-/// finishes. The task joins on the background thread as a best effort clean exit.
+/// finishes. The task joins on the background thread as a best-effort clean exit.
 ///
 /// Note nothing special is done to try and keep the thread alive longer. If you terminate the
-/// program the default behavior of reaping the thread mid execution will still occur.
+/// program the default behavior of reaping the thread mid-execution will still occur.
 pub struct SelfUpdatingPollingTask {
     shared_state: Arc<PollingTaskInnerState>,
     background_thread: Option<JoinHandle<()>>,
