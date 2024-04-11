@@ -1,7 +1,66 @@
+use std::num::TryFromIntError;
 use std::sync::{Arc, Condvar, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
+
+struct PollingTask {
+    inner_task: SelfUpdatingPollingTask,
+    interval: Arc<AtomicU64>,
+}
+
+impl PollingTask {
+    pub fn new<F>(interval: Duration, task: F) -> Result<Self, TryFromIntError>
+        where F: Fn() + Send + 'static
+    {
+        let shared_interval = Arc::new(AtomicU64::new(u64::try_from(interval.as_millis())?));
+        let shared_interval_clone = shared_interval.clone();
+
+        let wrapped_task = move |interval: &mut Duration| {
+            task();
+
+            let task_interval = Duration::from_millis(shared_interval_clone.load(Ordering::Relaxed));
+
+            // If the interval doesn't match that of the inner task, a set call was made since we
+            // last polled and the new value needs to be propagated.
+            if *interval != task_interval
+            {
+                *interval = task_interval;
+            }
+        };
+
+        Ok(Self {
+            inner_task: SelfUpdatingPollingTask::new(interval, wrapped_task),
+            interval: shared_interval,
+        })
+    }
+
+    pub fn new_with_checker<F>(interval: Duration, task: F) -> Result<Self, TryFromIntError>
+        where F: Fn(&dyn Fn() -> bool) + Send + 'static,
+    {
+        let shared_interval = Arc::new(AtomicU64::new(u64::try_from(interval.as_millis())?));
+        let shared_interval_clone = shared_interval.clone();
+
+        let wrapped_task = move |interval: &mut Duration, still_alive_checker: &dyn Fn() -> bool| {
+            task(still_alive_checker);
+
+            let task_interval = Duration::from_millis(shared_interval_clone.load(Ordering::Relaxed));
+
+            // If the interval doesn't match that of the inner task, a set call was made since we
+            // last polled and the new value needs to be propagated.
+            if *interval != task_interval
+            {
+                *interval = task_interval;
+            }
+        };
+
+        Ok(Self {
+            inner_task: SelfUpdatingPollingTask::new_with_checker(interval, wrapped_task),
+            interval: shared_interval,
+        })
+    }
+}
 
 struct InnerState {
     pub(crate) active: Mutex<bool>,
@@ -29,7 +88,7 @@ impl SelfUpdatingPollingTask {
         let shared_state = InnerState::new();
         let shared_state_clone = shared_state.clone();
 
-        SelfUpdatingPollingTask {
+        Self {
             inner_state: shared_state,
             background_thread: Some(thread::spawn(move || {
                 Self::poll_task_forever(&mut interval, &shared_state_clone, task)
@@ -43,7 +102,7 @@ impl SelfUpdatingPollingTask {
         let shared_state = InnerState::new();
         let shared_state_clone = shared_state.clone();
 
-        SelfUpdatingPollingTask {
+        Self {
             inner_state: shared_state,
             background_thread: Some(thread::spawn(move || {
                 let shared_state_checker_clone = shared_state_clone.clone();
