@@ -61,7 +61,7 @@ impl PollingTask {
 
     /// Creates a new background thread that immediately executes the given task.
     ///
-    /// * `interval` The interval to poll at. Note it must be expressible as a u64 in milliseconds.
+    /// * `interval` The interval to poll at. Note it must be expressible as an u64 in milliseconds.
     /// * `task` The closure to execute at every poll. This closure gets access to another function that can assert if the managed task is still active.
     ///
     /// If your task is long-running or has iterations (say updating 10 cache entries sequentially),
