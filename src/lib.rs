@@ -55,8 +55,7 @@
 //! - If your poll operation is long-lived or internally iterative, there are opportunities to assert
 //!   if the task is still active to allow the blocked clean exit to occur faster. If you create the
 //!   task with [`PollingTask::new_with_checker`] or [`SelfUpdatingPollingTask::new_with_checker`]
-//!   your closure will receive a lookup function to peek if the managed task is still active. The
-//!   type alias [`StillActiveChecker`] defines the signature of the lookup function.
+//!   your closure will receive a lookup function to peek if the managed task is still active.
 //!
 //! ```
 //!  use interruptible_polling::PollingTask;
