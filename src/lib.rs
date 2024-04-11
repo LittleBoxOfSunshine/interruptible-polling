@@ -23,9 +23,9 @@
 //!   use interruptible_polling::PollingTask;
 //!   use std::time::Duration;
 //!
-//!   let task = PollingTask::new(Duration::from_secs(30), Box::new(|| {
+//!   let task = PollingTask::new(Duration::from_secs(30), || {
 //!       println!("BeatBeat");
-//!   }));
+//!   });
 //!   ```
 //!
 //! - Some polled operations such as configuration updates contain the updated rate at which the
@@ -33,24 +33,23 @@
 //!   callback to the poll task that allows it to conveniently apply the new state to future polls.
 //!
 //!   ```no_run
-//!   use interruptible_polling::{PollingIntervalSetter, SelfUpdatingPollingTask};
+//!   use interruptible_polling::SelfUpdatingPollingTask;
 //!   use std::time::Duration;
 //!   use serde_json::{Value, from_reader};
 //!   use std::fs::File;
 //!   use std::io::BufReader;
 //!
-//!   let task = SelfUpdatingPollingTask::new(Duration::from_secs(30), Box::new(
-//!       move |setter: &PollingIntervalSetter| {
+//!   let task = SelfUpdatingPollingTask::new(Duration::from_secs(30),
+//!       move |interval: &mut Duration| {
 //!           let file = File::open("app.config").unwrap();
 //!           let reader = BufReader::new(file);
 //!           let config: Value = from_reader(reader).expect("JSON was not well-formatted");
 //!
 //!           // Do other work with config
 //!
-//!           setter(Duration::from_secs(config["pollingInterval"].as_u64().unwrap()))
-//!               .expect("Polling interval isn't u64 convertable");
+//!           *interval = Duration::from_secs(config["pollingInterval"].as_u64().expect("Polling interval isn't u64 convertable"));
 //!       }
-//!   ));
+//!   );
 //!   ```
 //!
 //! - If your poll operation is long-lived or internally iterative, there are opportunities to assert
@@ -60,12 +59,12 @@
 //!   type alias [`StillActiveChecker`] defines the signature of the lookup function.
 //!
 //! ```
-//!  use interruptible_polling::{PollingTask, StillActiveChecker};
+//!  use interruptible_polling::PollingTask;
 //!  use std::time::Duration;
 //!
 //!  let task = PollingTask::new_with_checker(
 //!      Duration::from_secs(30),
-//!      Box::new(|checker: &StillActiveChecker|
+//!      |checker: &dyn Fn() -> bool|
 //!  {
 //!      let keys = vec![1 ,2, 3];
 //!
@@ -78,7 +77,7 @@
 //!
 //!          // Some long or potentially long operation such as a synchronous web request.
 //!      }
-//!  }));
+//!  });
 //! ```
 //!
 //! # Fire and Forget
@@ -93,19 +92,11 @@
 mod fire_and_forget;
 mod self_updating_task;
 mod task;
-mod task2;
 
 #[cfg(feature = "fire-forget")]
 pub use fire_and_forget::fire_and_forget_polling_task;
 #[cfg(feature = "fire-forget")]
 pub use fire_and_forget::self_updating_fire_and_forget_polling_task;
 
-pub use self_updating_task::IntervalSettingTask;
-pub use self_updating_task::IntervalSettingTaskWithChecker;
-pub use self_updating_task::PollingIntervalSetter;
 pub use self_updating_task::SelfUpdatingPollingTask;
-
-pub use task::CheckerTask;
 pub use task::PollingTask;
-pub use task::StillActiveChecker;
-pub use task::UnitTask;
