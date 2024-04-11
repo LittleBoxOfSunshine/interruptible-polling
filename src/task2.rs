@@ -14,20 +14,11 @@ impl PollingTask {
     pub fn new<F>(interval: Duration, task: F) -> Result<Self, TryFromIntError>
         where F: Fn() + Send + 'static
     {
-        let shared_interval = Arc::new(AtomicU64::new(u64::try_from(interval.as_millis())?));
-        let shared_interval_clone = shared_interval.clone();
+        let (shared_interval, shared_interval_clone) = Self::new_intervals(interval)?;
 
         let wrapped_task = move |interval: &mut Duration| {
             task();
-
-            let task_interval = Duration::from_millis(shared_interval_clone.load(Ordering::Relaxed));
-
-            // If the interval doesn't match that of the inner task, a set call was made since we
-            // last polled and the new value needs to be propagated.
-            if *interval != task_interval
-            {
-                *interval = task_interval;
-            }
+            Self::apply_new_interval_if_exists(interval, &shared_interval_clone)
         };
 
         Ok(Self {
@@ -36,23 +27,32 @@ impl PollingTask {
         })
     }
 
-    pub fn new_with_checker<F>(interval: Duration, task: F) -> Result<Self, TryFromIntError>
-        where F: Fn(&dyn Fn() -> bool) + Send + 'static,
-    {
+    fn new_intervals(interval: Duration) -> Result<(Arc<AtomicU64>, Arc<AtomicU64>), TryFromIntError> {
         let shared_interval = Arc::new(AtomicU64::new(u64::try_from(interval.as_millis())?));
         let shared_interval_clone = shared_interval.clone();
 
+        Ok((shared_interval, shared_interval_clone))
+    }
+
+    fn apply_new_interval_if_exists(inner_interval: &mut Duration, task_interval: &Arc<AtomicU64>) {
+        let task_interval = Duration::from_millis(task_interval.load(Ordering::Relaxed));
+
+        // If the interval doesn't match that of the inner task, a set call was made since we
+        // last polled and the new value needs to be propagated.
+        if *inner_interval != task_interval
+        {
+            *inner_interval = task_interval;
+        }
+    }
+
+    pub fn new_with_checker<F>(interval: Duration, task: F) -> Result<Self, TryFromIntError>
+        where F: Fn(&dyn Fn() -> bool) + Send + 'static,
+    {
+        let (shared_interval, shared_interval_clone) = Self::new_intervals(interval)?;
+
         let wrapped_task = move |interval: &mut Duration, still_alive_checker: &dyn Fn() -> bool| {
             task(still_alive_checker);
-
-            let task_interval = Duration::from_millis(shared_interval_clone.load(Ordering::Relaxed));
-
-            // If the interval doesn't match that of the inner task, a set call was made since we
-            // last polled and the new value needs to be propagated.
-            if *interval != task_interval
-            {
-                *interval = task_interval;
-            }
+            Self::apply_new_interval_if_exists(interval, &shared_interval_clone)
         };
 
         Ok(Self {
