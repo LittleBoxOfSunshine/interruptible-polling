@@ -93,6 +93,7 @@
 mod fire_and_forget;
 mod self_updating_task;
 mod task;
+mod task2;
 
 #[cfg(feature = "fire-forget")]
 pub use fire_and_forget::fire_and_forget_polling_task;
