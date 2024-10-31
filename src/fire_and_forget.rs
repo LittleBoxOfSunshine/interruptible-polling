@@ -29,6 +29,20 @@ where
     });
 }
 
+pub fn variable_fire_and_forget_polling_task<D, F>(interval_fetcher: D, task: F)
+where
+    D: Fn() -> Duration + Send + 'static,
+    F: Fn() + Send + 'static,
+{
+    thread::spawn(move || {
+        loop {
+            task();
+
+            thread::sleep(interval_fetcher());
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -71,5 +85,19 @@ mod tests {
         sleep(Duration::from_millis(500));
 
         assert_eq!(100, counter.load(SeqCst));
+    }
+
+    #[test]
+    fn variable_polling_multiple_calls_can_exit() {
+        let counter = Arc::new(AtomicU64::new(0));
+        let counter_clone = counter.clone();
+
+        variable_fire_and_forget_polling_task(|| Duration::from_millis(10), move || {
+            counter_clone.fetch_add(1, SeqCst);
+        });
+
+        sleep(Duration::from_millis(50));
+
+        assert!(counter.load(SeqCst) > 1);
     }
 }

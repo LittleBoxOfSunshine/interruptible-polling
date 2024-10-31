@@ -4,28 +4,30 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use crate::common::InnerTaskState;
 
-/// Executes a closure with a given frequency where the closure also apply changes to the polling rate.
+/// Executes a closure with a remotely sourced, potentially variable interval rate. The interval
+/// rate is retrieved from the given closure on every iteration.
 ///
-/// When [`SelfUpdatingPollingTask`] is dropped, the background thread is signaled to perform a clean exit at
+/// When [`VariablePollingTask`] is dropped, the background thread is signaled to perform a clean exit at
 /// the first available opportunity. If the thread is currently sleeping, this will occur almost
 /// immediately. If the closure is still running, it will happen immediately after the closure
 /// finishes. The task joins on the background thread as a best-effort clean exit.
 ///
 /// Note nothing special is done to try and keep the thread alive longer. If you terminate the
 /// program the default behavior of reaping the thread mid-execution will still occur.
-pub struct SelfUpdatingPollingTask {
+pub struct VariablePollingTask {
     inner_state: Arc<InnerTaskState>,
     background_thread: Option<JoinHandle<()>>,
 }
 
-impl SelfUpdatingPollingTask {
+impl VariablePollingTask {
     /// Creates a new background thread that immediately executes the given task.
     ///
     /// * `interval` The interval to poll at. Note it must be expressible as an u64 in milliseconds.
     /// * `task` The closure to execute at every poll.
-    pub fn new<F>(mut interval: Duration, task: F) -> Self
+    pub fn new<D, F>(interval_fetcher: D, task: F) -> Self
     where
-        F: Fn(&mut Duration) + Send + 'static,
+        D: Fn() -> Duration + Send + 'static,
+        F: Fn() + Send + 'static,
     {
         let shared_state = InnerTaskState::new();
         let shared_state_clone = shared_state.clone();
@@ -33,7 +35,7 @@ impl SelfUpdatingPollingTask {
         Self {
             inner_state: shared_state,
             background_thread: Some(thread::spawn(move || {
-                Self::poll_task_forever(&mut interval, &shared_state_clone, task)
+                Self::poll_task_forever(&interval_fetcher, &shared_state_clone, task)
             })),
         }
     }
@@ -45,9 +47,10 @@ impl SelfUpdatingPollingTask {
     ///
     /// If your task is long-running or has iterations (say updating 10 cache entries sequentially),
     /// you can assert if the managed task is active to early exit during a clean exit.
-    pub fn new_with_checker<F>(mut interval: Duration, task: F) -> Self
+    pub fn new_with_checker<D, F>(interval_fetcher: D, task: F) -> Self
     where
-        F: Fn(&mut Duration, &dyn Fn() -> bool) + Send + 'static,
+        D: Fn() -> Duration + Send + 'static,
+        F: Fn(&dyn Fn() -> bool) + Send + 'static,
     {
         let shared_state = InnerTaskState::new();
         let shared_state_clone = shared_state.clone();
@@ -60,26 +63,27 @@ impl SelfUpdatingPollingTask {
                 let checker = move || shared_state_checker_clone.active.lock().unwrap().to_owned();
 
                 Self::poll_task_forever(
-                    &mut interval,
+                    &interval_fetcher,
                     &shared_state_clone,
-                    move |interval: &mut Duration| task(interval, &checker),
+                    move || task(&checker),
                 )
             })),
         }
     }
 
-    fn poll_task_forever<F>(interval: &mut Duration, inner_state: &Arc<InnerTaskState>, task: F)
+    fn poll_task_forever<D, F>(interval_fetcher: &D, inner_state: &Arc<InnerTaskState>, task: F)
     where
-        F: Fn(&mut Duration) + Send + 'static,
+        D: Fn() -> Duration + Send + 'static,
+        F: Fn() + Send + 'static,
     {
         loop {
-            task(interval);
+            task();
 
             let result = inner_state
                 .signal
                 .wait_timeout_while(
                     inner_state.active.lock().unwrap(),
-                    *interval,
+                    interval_fetcher(),
                     |&mut active| active,
                 )
                 .unwrap();
@@ -91,7 +95,7 @@ impl SelfUpdatingPollingTask {
     }
 }
 
-impl Drop for SelfUpdatingPollingTask {
+impl Drop for VariablePollingTask {
     /// Signals the background thread that it should exit at first available opportunity.
     fn drop(&mut self) {
         *self.inner_state.active.lock().unwrap() = false;
@@ -103,7 +107,7 @@ impl Drop for SelfUpdatingPollingTask {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SelfUpdatingPollingTask;
+    use crate::VariablePollingTask;
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering::SeqCst;
     use std::sync::{Arc, Mutex};
@@ -115,11 +119,20 @@ mod tests {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let tx = Mutex::new(Some(tx));
 
-        let _task = SelfUpdatingPollingTask::new(
-            Duration::from_millis(0),
-            move |interval: &mut Duration| {
+        let counter_clone_2 = counter.clone();
+        let increases_on_second_call = move || {
+            if counter_clone_2.load(SeqCst) == 0 {
+                Duration::from_millis(0)
+            }
+            else {
+                Duration::from_secs(5000)
+            }
+        };
+
+        let _task = VariablePollingTask::new(
+            increases_on_second_call,
+            move || {
                 counter_clone.fetch_add(1, SeqCst);
-                *interval = Duration::from_secs(5000);
                 if let Some(tx) = tx.lock().unwrap().take() {
                     tx.send(true).unwrap();
                 }
@@ -138,9 +151,10 @@ mod tests {
         let tx_exit = Mutex::new(Some(tx_exit));
 
         {
-            let _task = SelfUpdatingPollingTask::new_with_checker(
-                Duration::from_millis(0),
-                move |interval: &mut Duration, checker: &dyn Fn() -> bool| {
+            let _task = VariablePollingTask::new_with_checker(
+                // Prevent issues caused by cycling a second time.
+                || Duration::from_secs(5000),
+                move |checker: &dyn Fn() -> bool| {
                     tx.lock().unwrap().take().unwrap().send(true).unwrap();
 
                     loop {
@@ -149,8 +163,6 @@ mod tests {
                         }
                     }
 
-                    // Prevent issues caused by cycling a second time.
-                    *interval = Duration::from_secs(5000);
                     tx_exit.lock().unwrap().take().unwrap().send(true).unwrap();
                 },
             );

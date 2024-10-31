@@ -6,7 +6,7 @@
 //!
 //! <br>
 //!
-//! This library provides [`PollingTask`] and [`SelfUpdatingPollingTask`] structs for scheduling a
+//! This library provides [`PollingTask`] and [`VariablePollingTask`] structs for scheduling a
 //! closure to execute as a recurring task.
 //!
 //! It is common for a service to have long-lived polling operations for the life of the process.
@@ -29,28 +29,10 @@
 //!   ```
 //!
 //! - Some polled operations such as configuration updates contain the updated rate at which the
-//!   service should continue to poll for future updates. The [`SelfUpdatingPollingTask`] passes a
+//!   service should continue to poll for future updates. The [`VariablePollingTask`] passes a
 //!   callback to the poll task that allows it to conveniently apply the new state to future polls.
 //!
-//!   ```no_run
-//!   use interruptible_polling::SelfUpdatingPollingTask;
-//!   use std::time::Duration;
-//!   use serde_json::{Value, from_reader};
-//!   use std::fs::File;
-//!   use std::io::BufReader;
-//!
-//!   let task = SelfUpdatingPollingTask::new(Duration::from_secs(30),
-//!       move |interval: &mut Duration| {
-//!           let file = File::open("app.config").unwrap();
-//!           let reader = BufReader::new(file);
-//!           let config: Value = from_reader(reader).expect("JSON was not well-formatted");
-//!
-//!           // Do other work with config
-//!
-//!           *interval = Duration::from_secs(config["pollingInterval"].as_u64().expect("Polling interval isn't u64 convertable"));
-//!       }
-//!   );
-//!   ```
+//!     ```
 //!
 //! - If your poll operation is long-lived or internally iterative, there are opportunities to assert
 //!   if the task is still active to allow the blocked clean exit to occur faster. If you create the
@@ -90,12 +72,17 @@
 #[cfg(feature = "fire-forget")]
 mod fire_and_forget;
 mod self_updating_task;
+mod variable_task;
 mod task;
+mod common;
 
 #[cfg(feature = "fire-forget")]
 pub use fire_and_forget::fire_and_forget_polling_task;
 #[cfg(feature = "fire-forget")]
 pub use fire_and_forget::self_updating_fire_and_forget_polling_task;
+#[cfg(feature = "fire-forget")]
+pub use fire_and_forget::variable_fire_and_forget_polling_task;
 
 pub use self_updating_task::SelfUpdatingPollingTask;
 pub use task::PollingTask;
+pub use variable_task::VariablePollingTask;
