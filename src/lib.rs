@@ -17,13 +17,13 @@
 //! exit after the closure finishes.
 //!
 //! # Examples
-//! - Use [`PollingTask`] to emit a heart beat every 30 seconds.
+//! - Use [`PollingTask`] to emit a heart beat every 30 seconds without an exit timeout.
 //!
 //!   ```
-//!   use interruptible_polling::PollingTask;
+//!   use interruptible_polling::sync::PollingTask;
 //!   use std::time::Duration;
 //!
-//!   let task = PollingTask::new(Duration::from_secs(30), || {
+//!   let task = PollingTask::new(None, Duration::from_secs(30), || {
 //!       println!("BeatBeat");
 //!   });
 //!   ```
@@ -32,7 +32,7 @@
 //!   service should continue to poll for future updates. The [`VariablePollingTask`] passes a
 //!   callback to the poll task that allows it to conveniently apply the new state to future polls.
 //!
-//!     ```
+//!
 //!
 //! - If your poll operation is long-lived or internally iterative, there are opportunities to assert
 //!   if the task is still active to allow the blocked clean exit to occur faster. If you create the
@@ -40,10 +40,11 @@
 //!   your closure will receive a lookup function to peek if the managed task is still active.
 //!
 //! ```
-//!  use interruptible_polling::PollingTask;
+//!  use interruptible_polling::sync::PollingTask;
 //!  use std::time::Duration;
 //!
 //!  let task = PollingTask::new_with_checker(
+//!      None,
 //!      Duration::from_secs(30),
 //!      |checker: &dyn Fn() -> bool|
 //!  {
@@ -63,26 +64,18 @@
 //!
 //! # Fire and Forget
 //!
-//! For convenience, if you also need to run polling threads that don't require clean exits, fire and forget can be
-//! enabled. This is gated behind feature [`fire-forget`] to encourage use of the primary abstractions. It's not hard to make a
-//! polling thread, so typical crate users are here for the clean exit constructs. However, some projects need both.
-//! If you need both, enable the feature to make both available. By default, it's disabled.
+//! For convenience, if you also need to run polling threads that don't require clean exits, fire and forget
+//! versions of each polling task is offered with the same semantics for interval updates and early exit
+//! checkers.
+//!
+//! # Tokio
+//!
+//! The `tokio` module offers async variants compatible with [`tokio`]. Thef
+//!
+//! # Generic Async
+//!
 //!
 
-#[cfg(feature = "fire-forget")]
-mod fire_and_forget;
-mod self_updating_task;
-mod variable_task;
-mod task;
-mod common;
-
-#[cfg(feature = "fire-forget")]
-pub use fire_and_forget::fire_and_forget_polling_task;
-#[cfg(feature = "fire-forget")]
-pub use fire_and_forget::self_updating_fire_and_forget_polling_task;
-#[cfg(feature = "fire-forget")]
-pub use fire_and_forget::variable_fire_and_forget_polling_task;
-
-pub use self_updating_task::SelfUpdatingPollingTask;
-pub use task::PollingTask;
-pub use variable_task::VariablePollingTask;
+pub mod sync;
+//pub mod async;
+mod tokio;

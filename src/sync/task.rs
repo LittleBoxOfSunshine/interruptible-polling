@@ -1,8 +1,9 @@
-use crate::SelfUpdatingPollingTask;
+use crate::sync::SelfUpdatingPollingTask;
 use std::num::TryFromIntError;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use crate::sync::common::JoinError;
 
 /// General purpose RAII polling task that executes a closure with a given frequency.
 ///
@@ -14,7 +15,7 @@ use std::time::Duration;
 /// Note nothing special is done to try and keep the thread alive longer. If you terminate the
 /// program the default behavior of reaping the thread mid-execution will still occur.
 pub struct PollingTask {
-    _inner_task: SelfUpdatingPollingTask,
+    inner_task: SelfUpdatingPollingTask,
     interval: Arc<AtomicU64>,
 }
 
@@ -23,7 +24,7 @@ impl PollingTask {
     ///
     /// * `interval` The interval to poll at. Note it must be expressible as an u64 in milliseconds.
     /// * `task` The closure to execute at every poll.
-    pub fn new<F>(interval: Duration, task: F) -> Result<Self, TryFromIntError>
+    pub fn new<F>(timeout: Option<Duration>, interval: Duration, task: F) -> Result<Self, TryFromIntError>
     where
         F: Fn() + Send + 'static,
     {
@@ -35,7 +36,7 @@ impl PollingTask {
         };
 
         Ok(Self {
-            _inner_task: SelfUpdatingPollingTask::new(interval, wrapped_task),
+            inner_task: SelfUpdatingPollingTask::new(timeout, interval, wrapped_task),
             interval: shared_interval,
         })
     }
@@ -66,7 +67,7 @@ impl PollingTask {
     ///
     /// If your task is long-running or has iterations (say updating 10 cache entries sequentially),
     /// you can assert if the managed task is active to early exit during a clean exit.
-    pub fn new_with_checker<F>(interval: Duration, task: F) -> Result<Self, TryFromIntError>
+    pub fn new_with_checker<F>(timeout: Option<Duration>, interval: Duration, task: F) -> Result<Self, TryFromIntError>
     where
         F: Fn(&dyn Fn() -> bool) + Send + 'static,
     {
@@ -79,9 +80,13 @@ impl PollingTask {
             };
 
         Ok(Self {
-            _inner_task: SelfUpdatingPollingTask::new_with_checker(interval, wrapped_task),
+            inner_task: SelfUpdatingPollingTask::new_with_checker(timeout, interval, wrapped_task),
             interval: shared_interval,
         })
+    }
+
+    pub fn join(&mut self) -> Result<(), JoinError> {
+        self.inner_task.join()
     }
 
     /// Update the delay between poll events. Applied on the next iteration.
@@ -114,6 +119,7 @@ mod tests {
         let counter_clone = counter.clone();
 
         let task = PollingTask::new(
+            None,
             Duration::from_millis(1),
             Box::new(move || {
                 counter_clone.fetch_add(1, SeqCst);
@@ -151,6 +157,7 @@ mod tests {
         let counter_clone = counter.clone();
 
         let _task = PollingTask::new(
+            None,
             Duration::from_secs(5000),
             Box::new(move || {
                 counter_clone.fetch_add(1, SeqCst);
@@ -171,6 +178,7 @@ mod tests {
 
         {
             let _task = PollingTask::new(
+                None,
                 Duration::from_secs(5000),
                 Box::new(move || {
                     start_tx.lock().unwrap().take().unwrap().send(()).unwrap();
@@ -198,6 +206,7 @@ mod tests {
 
         {
             let _task = PollingTask::new_with_checker(
+                None,
                 Duration::from_millis(0),
                 Box::new(move |checker: &dyn Fn() -> bool| {
                     if let Some(tx) = tx.lock().unwrap().take() {

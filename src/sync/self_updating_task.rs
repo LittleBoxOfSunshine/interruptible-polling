@@ -1,8 +1,10 @@
 use std::sync::Arc;
+use std::sync::mpsc::Sender;
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
-use crate::common::InnerTaskState;
+use std::sync::mpsc::Receiver;
+use crate::sync::common::{InnerTaskState, JoinError};
 
 /// Executes a closure with a given frequency where the closure also apply changes to the polling rate.
 ///
@@ -16,6 +18,7 @@ use crate::common::InnerTaskState;
 pub struct SelfUpdatingPollingTask {
     inner_state: Arc<InnerTaskState>,
     background_thread: Option<JoinHandle<()>>,
+    shutdown_rx: Receiver<()>,
 }
 
 impl SelfUpdatingPollingTask {
@@ -23,18 +26,20 @@ impl SelfUpdatingPollingTask {
     ///
     /// * `interval` The interval to poll at. Note it must be expressible as an u64 in milliseconds.
     /// * `task` The closure to execute at every poll.
-    pub fn new<F>(mut interval: Duration, task: F) -> Self
+    pub fn new<F>(timeout: Option<Duration>, mut interval: Duration, task: F) -> Self
     where
         F: Fn(&mut Duration) + Send + 'static,
     {
-        let shared_state = InnerTaskState::new();
+        let shared_state = InnerTaskState::new(timeout);
         let shared_state_clone = shared_state.clone();
+        let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
 
         Self {
             inner_state: shared_state,
             background_thread: Some(thread::spawn(move || {
-                Self::poll_task_forever(&mut interval, &shared_state_clone, task)
+                Self::poll_task_forever(&mut interval, &shared_state_clone, task, shutdown_tx)
             })),
+            shutdown_rx,
         }
     }
 
@@ -45,12 +50,13 @@ impl SelfUpdatingPollingTask {
     ///
     /// If your task is long-running or has iterations (say updating 10 cache entries sequentially),
     /// you can assert if the managed task is active to early exit during a clean exit.
-    pub fn new_with_checker<F>(mut interval: Duration, task: F) -> Self
+    pub fn new_with_checker<F>(timeout: Option<Duration>, mut interval: Duration, task: F) -> Self
     where
         F: Fn(&mut Duration, &dyn Fn() -> bool) + Send + 'static,
     {
-        let shared_state = InnerTaskState::new();
+        let shared_state = InnerTaskState::new(timeout);
         let shared_state_clone = shared_state.clone();
+        let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
 
         Self {
             inner_state: shared_state,
@@ -63,12 +69,14 @@ impl SelfUpdatingPollingTask {
                     &mut interval,
                     &shared_state_clone,
                     move |interval: &mut Duration| task(interval, &checker),
+                    shutdown_tx,
                 )
             })),
+            shutdown_rx,
         }
     }
 
-    fn poll_task_forever<F>(interval: &mut Duration, inner_state: &Arc<InnerTaskState>, task: F)
+    fn poll_task_forever<F>(interval: &mut Duration, inner_state: &Arc<InnerTaskState>, task: F, shutdown_tx: Sender<()>)
     where
         F: Fn(&mut Duration) + Send + 'static,
     {
@@ -88,22 +96,32 @@ impl SelfUpdatingPollingTask {
                 break;
             }
         }
+
+        // If the parent thread is down, there's nothing to report back to. Channel shutdown errors
+        // can be ignored.
+        let _ = shutdown_tx.send(());
+    }
+
+    pub fn join(&mut self) -> Result<(), JoinError> {
+        if let Some(handle) = self.background_thread.take() {
+            return self.inner_state.join_sync(handle, &self.shutdown_rx);
+        }
+
+        Ok(())
     }
 }
 
 impl Drop for SelfUpdatingPollingTask {
     /// Signals the background thread that it should exit at first available opportunity.
     fn drop(&mut self) {
-        *self.inner_state.active.lock().unwrap() = false;
-        self.inner_state.signal.notify_one();
-        self.background_thread.take().unwrap().join().unwrap();
+        self.join().unwrap()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SelfUpdatingPollingTask;
+    use crate::sync::SelfUpdatingPollingTask;
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering::SeqCst;
     use std::sync::{Arc, Mutex};
@@ -116,6 +134,7 @@ mod tests {
         let tx = Mutex::new(Some(tx));
 
         let _task = SelfUpdatingPollingTask::new(
+            None,
             Duration::from_millis(0),
             move |interval: &mut Duration| {
                 counter_clone.fetch_add(1, SeqCst);
@@ -139,6 +158,7 @@ mod tests {
 
         {
             let _task = SelfUpdatingPollingTask::new_with_checker(
+                None,
                 Duration::from_millis(0),
                 move |interval: &mut Duration, checker: &dyn Fn() -> bool| {
                     tx.lock().unwrap().take().unwrap().send(true).unwrap();

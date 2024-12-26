@@ -2,7 +2,8 @@ use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
-use crate::common::InnerTaskState;
+use std::sync::mpsc::{Receiver, Sender};
+use crate::sync::common::{InnerTaskState, JoinError};
 
 /// Executes a closure with a remotely sourced, potentially variable interval rate. The interval
 /// rate is retrieved from the given closure on every iteration.
@@ -17,6 +18,7 @@ use crate::common::InnerTaskState;
 pub struct VariablePollingTask {
     inner_state: Arc<InnerTaskState>,
     background_thread: Option<JoinHandle<()>>,
+    shutdown_rx: Receiver<()>,
 }
 
 impl VariablePollingTask {
@@ -24,19 +26,21 @@ impl VariablePollingTask {
     ///
     /// * `interval` The interval to poll at. Note it must be expressible as an u64 in milliseconds.
     /// * `task` The closure to execute at every poll.
-    pub fn new<D, F>(interval_fetcher: D, task: F) -> Self
+    pub fn new<D, F>(timeout: Option<Duration>, interval_fetcher: D, task: F) -> Self
     where
         D: Fn() -> Duration + Send + 'static,
         F: Fn() + Send + 'static,
     {
-        let shared_state = InnerTaskState::new();
+        let shared_state = InnerTaskState::new(timeout);
         let shared_state_clone = shared_state.clone();
+        let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
 
         Self {
             inner_state: shared_state,
             background_thread: Some(thread::spawn(move || {
-                Self::poll_task_forever(&interval_fetcher, &shared_state_clone, task)
+                Self::poll_task_forever(&interval_fetcher, &shared_state_clone, task, shutdown_tx)
             })),
+            shutdown_rx,
         }
     }
 
@@ -47,13 +51,14 @@ impl VariablePollingTask {
     ///
     /// If your task is long-running or has iterations (say updating 10 cache entries sequentially),
     /// you can assert if the managed task is active to early exit during a clean exit.
-    pub fn new_with_checker<D, F>(interval_fetcher: D, task: F) -> Self
+    pub fn new_with_checker<D, F>(timeout: Option<Duration>, interval_fetcher: D, task: F) -> Self
     where
         D: Fn() -> Duration + Send + 'static,
         F: Fn(&dyn Fn() -> bool) + Send + 'static,
     {
-        let shared_state = InnerTaskState::new();
+        let shared_state = InnerTaskState::new(timeout);
         let shared_state_clone = shared_state.clone();
+        let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
 
         Self {
             inner_state: shared_state,
@@ -66,12 +71,14 @@ impl VariablePollingTask {
                     &interval_fetcher,
                     &shared_state_clone,
                     move || task(&checker),
+                    shutdown_tx,
                 )
             })),
+            shutdown_rx,
         }
     }
 
-    fn poll_task_forever<D, F>(interval_fetcher: &D, inner_state: &Arc<InnerTaskState>, task: F)
+    fn poll_task_forever<D, F>(interval_fetcher: &D, inner_state: &Arc<InnerTaskState>, task: F, shutdown: Sender<()>)
     where
         D: Fn() -> Duration + Send + 'static,
         F: Fn() + Send + 'static,
@@ -92,22 +99,32 @@ impl VariablePollingTask {
                 break;
             }
         }
+
+        // If the parent thread is down, there's nothing to report back to. Channel shutdown errors
+        // can be ignored.
+        let _ = shutdown.send(());
+    }
+
+    pub fn join(&mut self) -> Result<(), JoinError> {
+        if let Some(handle) = self.background_thread.take() {
+            return self.inner_state.join_sync(handle, &self.shutdown_rx);
+        }
+
+        Ok(())
     }
 }
 
 impl Drop for VariablePollingTask {
     /// Signals the background thread that it should exit at first available opportunity.
     fn drop(&mut self) {
-        *self.inner_state.active.lock().unwrap() = false;
-        self.inner_state.signal.notify_one();
-        self.background_thread.take().unwrap().join().unwrap();
+        self.join().unwrap()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::VariablePollingTask;
+    use crate::sync::VariablePollingTask;
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering::SeqCst;
     use std::sync::{Arc, Mutex};
@@ -130,6 +147,7 @@ mod tests {
         };
 
         let _task = VariablePollingTask::new(
+            None,
             increases_on_second_call,
             move || {
                 counter_clone.fetch_add(1, SeqCst);
@@ -152,6 +170,7 @@ mod tests {
 
         {
             let _task = VariablePollingTask::new_with_checker(
+                None,
                 // Prevent issues caused by cycling a second time.
                 || Duration::from_secs(5000),
                 move |checker: &dyn Fn() -> bool| {
