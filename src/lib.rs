@@ -74,10 +74,8 @@
 //!
 //! # Generic Async
 //!
-//!
 
 pub mod sync;
-pub mod sync2;
 
 // #[cfg(feature = "tokio")]
 // pub mod tokio;

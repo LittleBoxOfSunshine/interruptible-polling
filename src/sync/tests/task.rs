@@ -1,10 +1,12 @@
-use crate::sync2::PollingTaskBuilder;
-use crate::sync2::PollingTaskHandle;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering::SeqCst;
-use std::sync::{Arc, Mutex};
-use std::thread::sleep;
-use std::time::Duration;
+use crate::sync::{PollingTaskBuilder, PollingTaskHandle};
+use std::{
+    sync::{
+        atomic::{AtomicU64, Ordering::SeqCst},
+        Arc, Mutex,
+    },
+    thread::sleep,
+    time::Duration,
+};
 
 #[test]
 fn poll() {
@@ -32,7 +34,7 @@ fn get_task_and_timer(wait: bool) -> (Arc<AtomicU64>, PollingTaskHandle) {
         task_builder = task_builder.wait_for_clean_exit(None)
     }
 
-    let task= task_builder.task(move || {
+    let task = task_builder.task(move || {
         counter_clone.fetch_add(1, SeqCst);
     });
 
@@ -46,9 +48,11 @@ fn early_clean_exit() {
     let counter = Arc::new(AtomicU64::new(0));
     let counter_clone = counter.clone();
 
-    let _task = PollingTaskBuilder::new(Duration::from_millis(5000)).wait_for_clean_exit(None).task(move || {
-        counter_clone.fetch_add(1, SeqCst);
-    });
+    let _task = PollingTaskBuilder::new(Duration::from_millis(5000))
+        .wait_for_clean_exit(None)
+        .task(move || {
+            counter_clone.fetch_add(1, SeqCst);
+        });
     sleep(Duration::from_millis(50));
 
     assert_eq!(1, counter.load(SeqCst))
@@ -62,12 +66,14 @@ fn drop_while_running_blocks() {
     let stop_tx = Mutex::new(Some(stop_tx));
 
     {
-        let _task = PollingTaskBuilder::new(Duration::from_millis(5000)).wait_for_clean_exit(None).task(move || {
-            start_tx.lock().unwrap().take().unwrap().send(()).unwrap();
-            // Lazy, give enough delay to allow signal to propagate.
-            sleep(Duration::from_millis(200));
-            stop_tx.lock().unwrap().take().unwrap().send(()).unwrap();
-        });
+        let _task = PollingTaskBuilder::new(Duration::from_millis(5000))
+            .wait_for_clean_exit(None)
+            .task(move || {
+                start_tx.lock().unwrap().take().unwrap().send(()).unwrap();
+                // Lazy, give enough delay to allow signal to propagate.
+                sleep(Duration::from_millis(200));
+                stop_tx.lock().unwrap().take().unwrap().send(()).unwrap();
+            });
 
         // Wait until thread reports alive, then drop
         start_rx.blocking_recv().unwrap();
@@ -85,8 +91,9 @@ async fn long_poll_exits_early() {
     let tx_exit = Mutex::new(Some(tx_exit));
 
     {
-        let _task = PollingTaskBuilder::new(Duration::from_millis(5000)).wait_for_clean_exit(None).task_with_checker(
-            move |checker: &dyn Fn() -> bool| {
+        let _task = PollingTaskBuilder::new(Duration::from_millis(5000))
+            .wait_for_clean_exit(None)
+            .task_with_checker(move |checker: &dyn Fn() -> bool| {
                 if let Some(tx) = tx.lock().unwrap().take() {
                     tx.send(true).unwrap();
 
@@ -98,8 +105,7 @@ async fn long_poll_exits_early() {
 
                     tx_exit.lock().unwrap().take().unwrap().send(true).unwrap();
                 }
-            },
-        );
+            });
 
         // Guarantee we polled at least once
         rx.await.unwrap();
