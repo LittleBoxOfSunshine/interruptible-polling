@@ -1,7 +1,7 @@
-use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 use thiserror::Error;
+use tokio::sync::mpsc::Receiver;
 
 #[derive(Error, Debug)]
 pub enum JoinError {
@@ -24,7 +24,7 @@ impl InnerTaskState {
         })
     }
 
-    pub fn join_sync(&self, rx: &Receiver<()>) -> Result<(), JoinError> {
+    pub async fn join_async(&self, rx: &mut Receiver<()>) -> Result<(), JoinError> {
         *self.active.lock().unwrap() = false;
         self.signal.notify_one();
 
@@ -33,10 +33,15 @@ impl InnerTaskState {
                 // If the underlying thread panics, Err is returned. There's nothing useful we can
                 // do with that here. The point is to wait until exit. If it panicked, it has already
                 // exited and we can move on.
-                let _ = rx.recv();
+                let _ = rx.recv().await;
                 Ok(())
             }
-            Some(timeout) => Ok(rx.recv_timeout(timeout).map_err(|_| JoinError::Timeout)?),
+            Some(timeout) => Ok(tokio::time::timeout(timeout, async {
+                let _ = rx.recv().await;
+                ()
+            })
+            .await
+            .map_err(|_| JoinError::Timeout)?),
         }
     }
 }

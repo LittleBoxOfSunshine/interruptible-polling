@@ -1,9 +1,9 @@
-use crate::sync::common::{InnerTaskState, JoinError};
-use std::sync::mpsc::{Receiver, Sender};
+use crate::tokio::common::{InnerTaskState, JoinError};
 use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
+use tokio::sync::mpsc::{Receiver, Sender};
 
 /// Executes a closure with a remotely sourced, potentially variable interval rate. The interval
 /// rate is retrieved from the given closure on every iteration.
@@ -33,7 +33,7 @@ impl VariablePollingTask {
     {
         let shared_state = InnerTaskState::new(timeout);
         let shared_state_clone = shared_state.clone();
-        let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::mpsc::channel(1);
 
         Self {
             inner_state: shared_state,
@@ -58,7 +58,7 @@ impl VariablePollingTask {
     {
         let shared_state = InnerTaskState::new(timeout);
         let shared_state_clone = shared_state.clone();
-        let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::mpsc::channel(1);
 
         Self {
             inner_state: shared_state,
@@ -109,13 +109,13 @@ impl VariablePollingTask {
         let _ = shutdown.send(());
     }
 
-    pub fn join(mut self) -> Result<(), JoinError> {
-        self.join_impl()
+    pub async fn join(mut self) -> Result<(), JoinError> {
+        self.join_impl().await
     }
 
-    fn join_impl(&mut self) -> Result<(), JoinError> {
+    pub async fn join_impl(&mut self) -> Result<(), JoinError> {
         if let Some(handle) = self.background_thread.take() {
-            return self.inner_state.join_sync(&self.shutdown_rx);
+            return self.inner_state.join_async(&mut self.shutdown_rx).await;
         }
 
         Ok(())
@@ -125,14 +125,19 @@ impl VariablePollingTask {
 impl Drop for VariablePollingTask {
     /// Signals the background thread that it should exit at first available opportunity.
     fn drop(&mut self) {
-        self.join_impl().unwrap()
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .build()
+            .unwrap()
+            .block_on(self.join_impl())
+            .unwrap();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sync::VariablePollingTask;
+    use crate::tokio::VariablePollingTask;
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering::SeqCst;
     use std::sync::{Arc, Mutex};

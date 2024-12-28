@@ -15,7 +15,7 @@ tokio = ["dep:tokio"]
 
 [dependencies]
 thiserror = "2.0.9"
-tokio = { version = "1.42.0", features = ["time"], optional = true }
+tokio = { version = "1.42.0", features = ["time", "rt-multi-thread"], optional = true }
 
 [dev-dependencies]
 tokio = { version = "1.42.0", features = ["sync", "macros", "rt"] }

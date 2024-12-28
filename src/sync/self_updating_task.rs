@@ -1,10 +1,10 @@
-use std::sync::Arc;
+use crate::sync::common::{InnerTaskState, JoinError};
+use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
+use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
-use std::sync::mpsc::Receiver;
-use crate::sync::common::{InnerTaskState, JoinError};
 
 /// Executes a closure with a given frequency where the closure also apply changes to the polling rate.
 ///
@@ -76,8 +76,12 @@ impl SelfUpdatingPollingTask {
         }
     }
 
-    fn poll_task_forever<F>(interval: &mut Duration, inner_state: &Arc<InnerTaskState>, task: F, shutdown_tx: Sender<()>)
-    where
+    fn poll_task_forever<F>(
+        interval: &mut Duration,
+        inner_state: &Arc<InnerTaskState>,
+        task: F,
+        shutdown_tx: Sender<()>,
+    ) where
         F: Fn(&mut Duration) + Send + 'static,
     {
         loop {
@@ -102,9 +106,13 @@ impl SelfUpdatingPollingTask {
         let _ = shutdown_tx.send(());
     }
 
-    pub fn join(&mut self) -> Result<(), JoinError> {
+    pub fn join(mut self) -> Result<(), JoinError> {
+        self.join_impl()
+    }
+
+    fn join_impl(&mut self) -> Result<(), JoinError> {
         if let Some(handle) = self.background_thread.take() {
-            return self.inner_state.join_sync(handle, &self.shutdown_rx);
+            return self.inner_state.join_sync(&self.shutdown_rx);
         }
 
         Ok(())
@@ -114,7 +122,7 @@ impl SelfUpdatingPollingTask {
 impl Drop for SelfUpdatingPollingTask {
     /// Signals the background thread that it should exit at first available opportunity.
     fn drop(&mut self) {
-        self.join().unwrap()
+        self.join_impl().unwrap()
     }
 }
 

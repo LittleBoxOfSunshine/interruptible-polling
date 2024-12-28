@@ -1,5 +1,5 @@
-use crate::sync::common::JoinError;
-use crate::sync::SelfUpdatingPollingTask;
+use crate::tokio::common::JoinError;
+use crate::tokio::SelfUpdatingPollingTask;
 use std::num::TryFromIntError;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -93,8 +93,8 @@ impl PollingTask {
         })
     }
 
-    pub fn join(mut self) -> Result<(), JoinError> {
-        self.inner_task.join()
+    pub async fn join(self) -> Result<(), JoinError> {
+        self.inner_task.join().await
     }
 
     /// Update the delay between poll events. Applied on the next iteration.
