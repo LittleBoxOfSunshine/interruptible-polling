@@ -19,7 +19,7 @@ pub struct PollingTaskHandle {
 }
 
 impl PollingTaskHandle {
-    fn cancel(mut self) -> Result<(), CancelPollingTaskTimeout> {
+    pub fn cancel(mut self) -> Result<(), CancelPollingTaskTimeout> {
         self.cancel_impl()
     }
 
@@ -61,6 +61,24 @@ struct IntervalCell(UnsafeCell<Duration>);
 
 unsafe impl Sync for IntervalCell {}
 
+#[derive(Clone)]
+pub struct TaskChecker<'a> {
+    shared_state: &'a Arc<SharedState>,
+}
+
+impl<'a> TaskChecker<'a> {
+    fn new(shared_state: &'a Arc<SharedState>) -> Self {
+        Self { shared_state }
+    }
+
+    /// Checks if the polling task is still in a running state. Returns false when the owner has
+    /// requested a clean exit. This should be checked periodically through iterative work. When
+    /// false is returned, exit your closure as soon as possible.
+    pub fn is_running(&self) -> bool {
+        self.shared_state.active.lock().unwrap().to_owned()
+    }
+}
+
 pub struct PollingTaskBuilder {
     wait_for_clean_exit: bool,
     interval: Duration,
@@ -85,7 +103,7 @@ impl PollingTaskBuilder {
     fn into_polling_task_handle<D, F>(self, interval_fetcher: D, task: F) -> PollingTaskHandle
     where
         D: Fn() -> Duration + Send + 'static,
-        F: Fn(&dyn Fn() -> bool) + Send + 'static,
+        F: Fn(&TaskChecker) + Send + 'static,
     {
         let (sender, receiver) = std::sync::mpsc::channel();
         let signal = Arc::new(Condvar::new());
@@ -96,7 +114,7 @@ impl PollingTaskBuilder {
         let shared_state_clone = shared_state.clone();
 
         let _thread_handle = thread::spawn(move || {
-            let checker = || shared_state_clone.active.lock().unwrap().to_owned();
+            let checker = TaskChecker::new(&shared_state_clone);
             loop {
                 task(&checker);
 
@@ -147,7 +165,7 @@ impl PollingTaskBuilder {
     /// you can assert if the managed task is active to early exit during a clean exit.
     pub fn task_with_checker<F>(self, task: F) -> PollingTaskHandle
     where
-        F: Fn(&dyn Fn() -> bool) + Send + 'static,
+        F: Fn(&TaskChecker) + Send + 'static,
     {
         let interval = self.interval;
         let interval_fetcher = move || interval;
@@ -165,14 +183,14 @@ impl PollingTaskBuilder {
     /// program the default behavior of reaping the thread mid-execution will still occur.
     pub fn self_updating_task<F>(self, task: F) -> PollingTaskHandle
     where
-        F: Fn(&mut Duration) + Send + 'static,
+        F: Fn() -> Duration + Send + 'static,
     {
-        self.self_updating_task_with_checker(move |duration, _checker| task(duration))
+        self.self_updating_task_with_checker(move |_checker| task())
     }
 
     pub fn self_updating_task_with_checker<F>(self, task: F) -> PollingTaskHandle
     where
-        F: Fn(&mut Duration, &dyn Fn() -> bool) + Send + 'static,
+        F: Fn(&TaskChecker) -> Duration + Send + 'static,
     {
         let interval = Arc::new(IntervalCell(UnsafeCell::new(self.interval)));
         let interval_clone = interval.clone();
@@ -187,7 +205,7 @@ impl PollingTaskBuilder {
             // poll 'proc'). This means that the access and potential mutation can't race.
             unsafe {
                 let interval_ref = &mut *interval.0.get();
-                task(interval_ref, checker);
+                *interval_ref = task(checker);
             }
         })
     }
@@ -213,7 +231,7 @@ impl PollingTaskBuilder {
     pub fn variable_task_with_checker<D, F>(self, interval_fetcher: D, task: F) -> PollingTaskHandle
     where
         D: Fn() -> Duration + Send + 'static,
-        F: Fn(&dyn Fn() -> bool) + Send + 'static,
+        F: Fn(&TaskChecker) + Send + 'static,
     {
         self.into_polling_task_handle(interval_fetcher, move |checker| task(checker))
     }

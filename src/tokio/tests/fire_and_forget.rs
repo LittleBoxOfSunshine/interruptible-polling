@@ -1,18 +1,15 @@
-use crate::sync::{
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering::SeqCst;
+use std::time::Duration;
+use tokio::time::sleep;
+use crate::tokio::{
     fire_and_forget_polling_task, self_updating_fire_and_forget_polling_task,
     variable_fire_and_forget_polling_task,
 };
-use std::{
-    sync::{
-        atomic::{AtomicU64, Ordering::SeqCst},
-        Arc,
-    },
-    thread::sleep,
-    time::Duration,
-};
 
-#[test]
-fn polls_and_can_exit() {
+#[tokio::test]
+async fn polls_and_can_exit() {
     let counter = Arc::new(AtomicU64::new(0));
     let counter_clone = counter.clone();
 
@@ -20,13 +17,13 @@ fn polls_and_can_exit() {
         counter_clone.fetch_add(1, SeqCst);
     });
 
-    sleep(Duration::from_millis(50));
+    sleep(Duration::from_millis(50)).await;
 
     assert!(counter.load(SeqCst) > 1);
 }
 
-#[test]
-fn self_updating_polls_and_can_exit() {
+#[tokio::test]
+async fn self_updating_polls_and_can_exit() {
     let counter = Arc::new(AtomicU64::new(0));
     let counter_clone = counter.clone();
 
@@ -42,13 +39,13 @@ fn self_updating_polls_and_can_exit() {
         },
     );
 
-    sleep(Duration::from_millis(500));
+    sleep(Duration::from_millis(500)).await;
 
     assert_eq!(100, counter.load(SeqCst));
 }
 
-#[test]
-fn variable_polling_multiple_calls_can_exit() {
+#[tokio::test]
+async fn variable_polling_multiple_calls_can_exit() {
     let counter = Arc::new(AtomicU64::new(0));
     let counter_clone = counter.clone();
 
@@ -59,7 +56,7 @@ fn variable_polling_multiple_calls_can_exit() {
         },
     );
 
-    sleep(Duration::from_millis(50));
+    sleep(Duration::from_millis(50)).await;
 
     assert!(counter.load(SeqCst) > 1);
 }

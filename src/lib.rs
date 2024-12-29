@@ -74,11 +74,10 @@
 //!
 //! # Generic Async
 
-use thiserror::Error;
-
 pub mod sync;
 
 #[cfg(feature = "tokio")]
 pub mod tokio;
 
 mod error;
+

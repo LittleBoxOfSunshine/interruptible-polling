@@ -10,7 +10,7 @@ pub struct PollingTaskHandle {
 }
 
 impl PollingTaskHandle {
-    pub async fn cancel(mut self) -> Result<(), CancelPollingTaskTimeout> {
+    pub async fn cancel(self) -> Result<(), CancelPollingTaskTimeout> {
         Self::cancel_impl(
             self.cancellation_token.clone(),
             self.signal.clone(),
@@ -68,8 +68,25 @@ struct IntervalCell(UnsafeCell<Duration>);
 
 unsafe impl Sync for IntervalCell {}
 
+#[derive(Clone)]
+pub struct TaskChecker {
+    cancellation_token: CancellationToken,
+}
+
+impl TaskChecker {
+    fn new(cancellation_token: CancellationToken) -> Self {
+        Self { cancellation_token }
+    }
+
+    /// Checks if the polling task is still in a running state. Returns false when the owner has
+    /// requested a clean exit. This should be checked periodically through iterative work. When
+    /// false is returned, exit your closure as soon as possible.
+    pub fn is_running(&self) -> bool {
+        self.cancellation_token.is_cancelled()
+    }
+}
+
 pub struct PollingTaskBuilder {
-    track_for_clean_exit: bool,
     interval: Duration,
     timeout: Option<Duration>,
 }
@@ -77,7 +94,6 @@ pub struct PollingTaskBuilder {
 impl PollingTaskBuilder {
     pub fn new(interval: Duration) -> Self {
         Self {
-            track_for_clean_exit: false,
             interval,
             timeout: None,
         }
@@ -96,7 +112,7 @@ impl PollingTaskBuilder {
     where
         D: Fn() -> Dfut + Send + 'static,
         Dfut: Future<Output = Duration> + Send,
-        F: Fn(&dyn Fn() -> bool) -> Ffut + Send + 'static,
+        F: Fn(TaskChecker) -> Ffut + Send + 'static,
         Ffut: Future<Output = ()> + Send,
     {
         let signal = Arc::new(Notify::new());
@@ -106,9 +122,10 @@ impl PollingTaskBuilder {
         let cancellation_token_clone2 = cancellation_token.clone();
 
         let _thread_handle = tokio::task::spawn(async move {
-            let checker = || cancellation_token_clone2.is_cancelled();
+            let checker = TaskChecker::new(cancellation_token_clone2);
             loop {
-                task(&checker).await;
+                let checker_clone = checker.clone();
+                task(checker_clone).await;
 
                 select! {
                     _ = cancellation_token_clone.cancelled() => {
@@ -151,7 +168,7 @@ impl PollingTaskBuilder {
     /// you can assert if the managed task is active to early exit during a clean exit.
     pub fn task_with_checker<F, Fut>(self, task: F) -> PollingTaskHandle
     where
-        F: Fn(&dyn Fn() -> bool) -> Fut + Send + 'static,
+        F: Fn(TaskChecker) -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send,
     {
         let interval = self.interval;
@@ -170,16 +187,16 @@ impl PollingTaskBuilder {
     /// program the default behavior of reaping the thread mid-execution will still occur.
     pub fn self_updating_task<F, Fut>(self, task: F) -> PollingTaskHandle
     where
-        F: Fn(&mut Duration) -> Fut + Send + 'static,
-        Fut: Future<Output = ()> + Send,
+        F: Fn() -> Fut + Send + 'static,
+        Fut: Future<Output = Duration> + Send,
     {
-        self.self_updating_task_with_checker(move |duration, _checker| task(duration))
+        self.self_updating_task_with_checker(move |_checker| task())
     }
 
     pub fn self_updating_task_with_checker<F, Fut>(self, task: F) -> PollingTaskHandle
     where
-        F: Fn(&mut Duration, &dyn Fn() -> bool) -> Fut + Send + 'static,
-        Fut: Future<Output = ()> + Send,
+        F: Fn(TaskChecker) -> Fut + Send + 'static,
+        Fut: Future<Output = Duration> + Send,
     {
         let interval = Arc::new(IntervalCell(UnsafeCell::new(self.interval)));
         let interval_clone = interval.clone();
@@ -192,12 +209,17 @@ impl PollingTaskBuilder {
         };
 
         self.into_polling_task_handle(interval_fetcher, move |checker| {
-            // SAFETY: The general implementation calls the passed task, *then* fetches the interval to
-            // determine how long to sleep for. This happens in the same thread (and function call, the
-            // poll 'proc'). This means that the access and potential mutation can't race.
-            unsafe {
-                let interval_ref = &mut *interval.0.get();
-                task(interval_ref, checker)
+            let interval_clone = interval.clone();
+            let task_future = task(checker);
+
+            async move {
+                // SAFETY: The general implementation calls the passed task, *then* fetches the interval to
+                // determine how long to sleep for. This happens in the same thread (and function call, the
+                // poll 'proc'). This means that the access and potential mutation can't race.
+                unsafe {
+                    let interval_ref = &mut *interval_clone.0.get();
+                    *interval_ref = task_future.await;
+                }
             }
         })
     }
@@ -230,7 +252,7 @@ impl PollingTaskBuilder {
     where
         D: Fn() -> Dfut + Send + 'static,
         Dfut: Future<Output = Duration> + Send,
-        F: Fn(&dyn Fn() -> bool) -> Ffut + Send + 'static,
+        F: Fn(TaskChecker) -> Ffut + Send + 'static,
         Ffut: Future<Output = ()> + Send,
     {
         self.into_polling_task_handle(interval_fetcher, move |checker| task(checker))

@@ -48,11 +48,11 @@ async fn slow_poll_exits_early() {
             .wait_for_clean_exit(None)
             .variable_task_with_checker(
                 || Duration::from_secs(5000),
-                move |checker: &dyn Fn() -> bool| {
+                move |checker| {
                     tx.lock().unwrap().take().unwrap().send(true).unwrap();
 
                     loop {
-                        if !checker() {
+                        if !checker.is_running() {
                             break;
                         }
                     }

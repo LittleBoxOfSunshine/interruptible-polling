@@ -1,4 +1,4 @@
-use crate::sync::PollingTaskBuilder;
+use crate::tokio::PollingTaskBuilder;
 use std::{
     sync::{
         atomic::{AtomicU64, Ordering::SeqCst},
@@ -12,15 +12,19 @@ async fn update_observed_on_next_poll_with_early_exit() {
     let counter = Arc::new(AtomicU64::new(0));
     let counter_clone = counter.clone();
     let (tx, rx) = tokio::sync::oneshot::channel();
-    let tx = Mutex::new(Some(tx));
+    let tx = Arc::new(Mutex::new(Some(tx)));
 
     let _task = PollingTaskBuilder::new(Duration::from_millis(0))
-        .wait_for_clean_exit(None)
-        .self_updating_task(move |interval: &mut Duration| {
-            counter_clone.fetch_add(1, SeqCst);
-            *interval = Duration::from_secs(5000);
-            if let Some(tx) = tx.lock().unwrap().take() {
-                tx.send(true).unwrap();
+        .track_for_clean_exit_within(Duration::from_millis(300))
+        .self_updating_task(move || {
+            let counter = counter_clone.clone();
+            let tx_clone = tx.clone();
+            async move {
+                counter.fetch_add(1, SeqCst);
+                if let Some(tx) = tx_clone.lock().unwrap().take() {
+                    tx.send(true).unwrap();
+                }
+                Duration::from_secs(5000)
             }
         });
 
@@ -31,26 +35,31 @@ async fn update_observed_on_next_poll_with_early_exit() {
 #[tokio::test]
 async fn slow_poll_exits_early() {
     let (tx, rx) = tokio::sync::oneshot::channel();
-    let tx = Mutex::new(Some(tx));
+    let tx = Arc::new(Mutex::new(Some(tx)));
     let (tx_exit, rx_exit) = tokio::sync::oneshot::channel();
-    let tx_exit = Mutex::new(Some(tx_exit));
+    let tx_exit = Arc::new(Mutex::new(Some(tx_exit)));
 
     {
         let _task = PollingTaskBuilder::new(Duration::from_millis(0))
-            .wait_for_clean_exit(None)
+            .track_for_clean_exit_within(Duration::from_millis(300))
             .self_updating_task_with_checker(
-                move |interval: &mut Duration, checker: &dyn Fn() -> bool| {
-                    tx.lock().unwrap().take().unwrap().send(true).unwrap();
+                move |checker| {
+                    let tx_clone = tx.clone();
+                    let tx_exit_clone = tx_exit.clone();
+                    async move {
+                        tx_clone.lock().unwrap().take().unwrap().send(true).unwrap();
 
-                    loop {
-                        if !checker() {
-                            break;
+                        loop {
+                            if !checker.is_running() {
+                                break;
+                            }
                         }
+
+                        // Prevent issues caused by cycling a second time.
+                        tx_exit_clone.lock().unwrap().take().unwrap().send(true).unwrap();
+                        Duration::from_secs(5000)
                     }
 
-                    // Prevent issues caused by cycling a second time.
-                    *interval = Duration::from_secs(5000);
-                    tx_exit.lock().unwrap().take().unwrap().send(true).unwrap();
                 },
             );
 

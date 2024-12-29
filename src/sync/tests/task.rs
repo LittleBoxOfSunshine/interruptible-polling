@@ -93,12 +93,12 @@ async fn long_poll_exits_early() {
     {
         let _task = PollingTaskBuilder::new(Duration::from_millis(5000))
             .wait_for_clean_exit(None)
-            .task_with_checker(move |checker: &dyn Fn() -> bool| {
+            .task_with_checker(move |checker| {
                 if let Some(tx) = tx.lock().unwrap().take() {
                     tx.send(true).unwrap();
 
                     loop {
-                        if !checker() {
+                        if !checker.is_running() {
                             break;
                         }
                     }
