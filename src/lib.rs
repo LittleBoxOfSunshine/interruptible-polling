@@ -73,9 +73,12 @@
 //! The `tokio` module offers async variants compatible with [`tokio`]. Thef
 //!
 //! # Generic Async
-//!
+
+use thiserror::Error;
 
 pub mod sync;
 
-// #[cfg(feature = "tokio")]
-// pub mod tokio;
+#[cfg(feature = "tokio")]
+pub mod tokio;
+
+mod error;

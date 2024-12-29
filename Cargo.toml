@@ -11,11 +11,12 @@ keywords = ["poll", "polling", "task", "sync", "async"]
 
 [features]
 default = []
-tokio = ["dep:tokio"]
+tokio = ["dep:tokio", "dep:tokio-util"]
 
 [dependencies]
 thiserror = "2.0.9"
 tokio = { version = "1.42.0", features = ["time", "rt-multi-thread"], optional = true }
+tokio-util = { version = "0.7.13", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1.42.0", features = ["sync", "macros", "rt"] }

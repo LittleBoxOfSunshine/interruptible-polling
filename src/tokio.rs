@@ -1,45 +1,41 @@
 use crate::error::CancelPollingTaskTimeout;
-use std::{
-    cell::UnsafeCell,
-    sync::{mpsc::Receiver, Arc, Condvar, Mutex},
-    thread,
-    time::Duration,
-};
-
-struct SharedState {
-    active: Mutex<bool>,
-    signal: Arc<Condvar>,
-}
+use std::{cell::UnsafeCell, future::Future, sync::Arc, time::Duration};
+use tokio::{select, sync::Notify};
+use tokio_util::sync::CancellationToken;
 
 pub struct PollingTaskHandle {
-    wait_for_clean_exit: bool,
-    receiver: Receiver<()>,
-    shared_state: Arc<SharedState>,
+    signal: Arc<Notify>,
+    cancellation_token: CancellationToken,
     timeout: Option<Duration>,
 }
 
 impl PollingTaskHandle {
-    fn cancel(mut self) -> Result<(), CancelPollingTaskTimeout> {
-        self.cancel_impl()
+    pub async fn cancel(mut self) -> Result<(), CancelPollingTaskTimeout> {
+        Self::cancel_impl(
+            self.cancellation_token.clone(),
+            self.signal.clone(),
+            self.timeout,
+        )
+        .await
     }
 
-    fn cancel_impl(&mut self) -> Result<(), CancelPollingTaskTimeout> {
-        *self.shared_state.active.lock().unwrap() = false;
-        self.shared_state.signal.notify_one();
+    async fn cancel_impl(
+        cancellation_token: CancellationToken,
+        signal: Arc<Notify>,
+        timeout: Option<Duration>,
+    ) -> Result<(), CancelPollingTaskTimeout> {
+        cancellation_token.cancel();
 
-        if self.wait_for_clean_exit {
-            match self.timeout {
-                None => {
-                    // TODO: This whole mechanism needs test coverage
-                    // If Err, the thread died before it could signal. There's nothing to handle
-                    // here, we're just waiting until the thread exits.
-                    let _ = self.receiver.recv();
-                }
-                Some(timeout) => {
-                    if self.receiver.recv_timeout(timeout).is_err() {
-                        return Err(CancelPollingTaskTimeout);
-                    }
-                }
+        // TODO: This whole mechanism needs test coverage
+        if let Some(timeout) = timeout {
+            if let Err(_) = tokio::time::timeout(timeout, async {
+                // If Err, the thread died before it could signal. There's nothing to handle
+                // here, we're just waiting until the thread exits.
+                let _ = signal.notified().await;
+            })
+            .await
+            {
+                return Err(CancelPollingTaskTimeout);
             }
         }
 
@@ -49,8 +45,19 @@ impl PollingTaskHandle {
 
 impl Drop for PollingTaskHandle {
     fn drop(&mut self) {
-        self.cancel_impl()
-            .expect("Polling thread didn't signal exit within timeout");
+        match self.timeout {
+            Some(timeout) => {
+                let cancellation_token = self.cancellation_token.clone();
+                let signal = self.signal.clone();
+
+                tokio::task::spawn(async move {
+                    Self::cancel_impl(cancellation_token, signal, Some(timeout))
+                        .await
+                        .expect("Polling task didn't signal exit within timeout");
+                });
+            }
+            None => self.cancellation_token.cancel(),
+        }
     }
 }
 
@@ -62,7 +69,7 @@ struct IntervalCell(UnsafeCell<Duration>);
 unsafe impl Sync for IntervalCell {}
 
 pub struct PollingTaskBuilder {
-    wait_for_clean_exit: bool,
+    track_for_clean_exit: bool,
     interval: Duration,
     timeout: Option<Duration>,
 }
@@ -70,60 +77,56 @@ pub struct PollingTaskBuilder {
 impl PollingTaskBuilder {
     pub fn new(interval: Duration) -> Self {
         Self {
-            wait_for_clean_exit: false,
+            track_for_clean_exit: false,
             interval,
             timeout: None,
         }
     }
 
-    pub fn wait_for_clean_exit(mut self, timeout: Option<Duration>) -> Self {
-        self.timeout = timeout;
-        self.wait_for_clean_exit = true;
+    pub fn track_for_clean_exit_within(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
         self
     }
 
-    fn into_polling_task_handle<D, F>(self, interval_fetcher: D, task: F) -> PollingTaskHandle
+    fn into_polling_task_handle<D, F, Dfut, Ffut>(
+        self,
+        interval_fetcher: D,
+        task: F,
+    ) -> PollingTaskHandle
     where
-        D: Fn() -> Duration + Send + 'static,
-        F: Fn(&dyn Fn() -> bool) + Send + 'static,
+        D: Fn() -> Dfut + Send + 'static,
+        Dfut: Future<Output = Duration> + Send,
+        F: Fn(&dyn Fn() -> bool) -> Ffut + Send + 'static,
+        Ffut: Future<Output = ()> + Send,
     {
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let signal = Arc::new(Condvar::new());
-        let shared_state = Arc::new(SharedState {
-            active: Mutex::new(true),
-            signal: signal.clone(),
-        });
-        let shared_state_clone = shared_state.clone();
+        let signal = Arc::new(Notify::new());
+        let signal_clone = signal.clone();
+        let cancellation_token = CancellationToken::new();
+        let cancellation_token_clone = cancellation_token.clone();
+        let cancellation_token_clone2 = cancellation_token.clone();
 
-        let _thread_handle = thread::spawn(move || {
-            let checker = || shared_state_clone.active.lock().unwrap().to_owned();
+        let _thread_handle = tokio::task::spawn(async move {
+            let checker = || cancellation_token_clone2.is_cancelled();
             loop {
-                task(&checker);
+                task(&checker).await;
 
-                let interval = interval_fetcher();
-                let result = shared_state_clone
-                    .signal
-                    .wait_timeout_while(
-                        shared_state_clone.active.lock().unwrap(),
-                        interval,
-                        |&mut active| active,
-                    )
-                    .unwrap();
-
-                if !result.1.timed_out() {
-                    break;
+                select! {
+                    _ = cancellation_token_clone.cancelled() => {
+                        break;
+                    }
+                    _ = tokio::time::sleep(interval_fetcher().await) => {
+                        // Nothing to do, move on to next iteration.
+                    }
                 }
             }
 
-            // If owning thread is down, there's nothing we need to signal.
-            let _ = sender.send(());
+            let _ = signal_clone.notify_one();
         });
 
         PollingTaskHandle {
-            wait_for_clean_exit: self.wait_for_clean_exit,
-            receiver,
-            shared_state,
+            signal,
             timeout: self.timeout,
+            cancellation_token,
         }
     }
 
@@ -136,21 +139,23 @@ impl PollingTaskBuilder {
     ///
     /// Note nothing special is done to try and keep the thread alive longer. If you terminate the
     /// program the default behavior of reaping the thread mid-execution will still occur.
-    pub fn task<F>(self, task: F) -> PollingTaskHandle
+    pub fn task<F, Fut>(self, task: F) -> PollingTaskHandle
     where
-        F: Fn() + Send + 'static,
+        F: Fn() -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + Send,
     {
         self.task_with_checker(move |_checker| task())
     }
 
     /// If your task is long-running or has iterations (say updating 10 cache entries sequentially),
     /// you can assert if the managed task is active to early exit during a clean exit.
-    pub fn task_with_checker<F>(self, task: F) -> PollingTaskHandle
+    pub fn task_with_checker<F, Fut>(self, task: F) -> PollingTaskHandle
     where
-        F: Fn(&dyn Fn() -> bool) + Send + 'static,
+        F: Fn(&dyn Fn() -> bool) -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + Send,
     {
         let interval = self.interval;
-        let interval_fetcher = move || interval;
+        let interval_fetcher = move || async move { interval };
         self.into_polling_task_handle(interval_fetcher, move |checker| task(checker))
     }
 
@@ -163,23 +168,28 @@ impl PollingTaskBuilder {
     ///
     /// Note nothing special is done to try and keep the thread alive longer. If you terminate the
     /// program the default behavior of reaping the thread mid-execution will still occur.
-    pub fn self_updating_task<F>(self, task: F) -> PollingTaskHandle
+    pub fn self_updating_task<F, Fut>(self, task: F) -> PollingTaskHandle
     where
-        F: Fn(&mut Duration) + Send + 'static,
+        F: Fn(&mut Duration) -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + Send,
     {
         self.self_updating_task_with_checker(move |duration, _checker| task(duration))
     }
 
-    pub fn self_updating_task_with_checker<F>(self, task: F) -> PollingTaskHandle
+    pub fn self_updating_task_with_checker<F, Fut>(self, task: F) -> PollingTaskHandle
     where
-        F: Fn(&mut Duration, &dyn Fn() -> bool) + Send + 'static,
+        F: Fn(&mut Duration, &dyn Fn() -> bool) -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + Send,
     {
         let interval = Arc::new(IntervalCell(UnsafeCell::new(self.interval)));
         let interval_clone = interval.clone();
         // SAFETY: The general implementation calls the passed task, *then* fetches the interval to
         // determine how long to sleep for. This happens in the same thread (and function call, the
         // poll 'proc'). This means that the access and potential mutation can't race.
-        let interval_fetcher = move || unsafe { (*interval_clone.0.get()).to_owned() };
+        let interval_fetcher = move || {
+            let interval = unsafe { (*interval_clone.0.get()).to_owned() };
+            async move { interval }
+        };
 
         self.into_polling_task_handle(interval_fetcher, move |checker| {
             // SAFETY: The general implementation calls the passed task, *then* fetches the interval to
@@ -187,7 +197,7 @@ impl PollingTaskBuilder {
             // poll 'proc'). This means that the access and potential mutation can't race.
             unsafe {
                 let interval_ref = &mut *interval.0.get();
-                task(interval_ref, checker);
+                task(interval_ref, checker)
             }
         })
     }
@@ -202,18 +212,26 @@ impl PollingTaskBuilder {
     ///
     /// Note nothing special is done to try and keep the thread alive longer. If you terminate the
     /// program the default behavior of reaping the thread mid-execution will still occur.
-    pub fn variable_task<D, F>(self, interval_fetcher: D, task: F) -> PollingTaskHandle
+    pub fn variable_task<D, F, Dfut, Ffut>(self, interval_fetcher: D, task: F) -> PollingTaskHandle
     where
-        D: Fn() -> Duration + Send + 'static,
-        F: Fn() + Send + 'static,
+        D: Fn() -> Dfut + Send + 'static,
+        Dfut: Future<Output = Duration> + Send,
+        F: Fn() -> Ffut + Send + 'static,
+        Ffut: Future<Output = ()> + Send,
     {
         self.into_polling_task_handle(interval_fetcher, move |_| task())
     }
 
-    pub fn variable_task_with_checker<D, F>(self, interval_fetcher: D, task: F) -> PollingTaskHandle
+    pub fn variable_task_with_checker<D, F, Dfut, Ffut>(
+        self,
+        interval_fetcher: D,
+        task: F,
+    ) -> PollingTaskHandle
     where
-        D: Fn() -> Duration + Send + 'static,
-        F: Fn(&dyn Fn() -> bool) + Send + 'static,
+        D: Fn() -> Dfut + Send + 'static,
+        Dfut: Future<Output = Duration> + Send,
+        F: Fn(&dyn Fn() -> bool) -> Ffut + Send + 'static,
+        Ffut: Future<Output = ()> + Send,
     {
         self.into_polling_task_handle(interval_fetcher, move |checker| task(checker))
     }
@@ -223,13 +241,15 @@ pub fn fire_and_forget_polling_task<F>(interval: Duration, task: F)
 where
     F: Fn() + Send + 'static,
 {
-    thread::spawn(move || loop {
-        task();
+    tokio::task::spawn(async move {
+        loop {
+            task();
 
-        // There's no need to support a fast exit here, because there is no handle head for this
-        // thread. Instead, we rely on that rust will kill the thread when the exe exits. This is
-        // safe, because if a clean exit was needed the other offerings of the crate would be used.
-        thread::sleep(interval);
+            // There's no need to support a fast exit here, because there is no handle head for this
+            // thread. Instead, we rely on that rust will kill the thread when the exe exits. This is
+            // safe, because if a clean exit was needed the other offerings of the crate would be used.
+            tokio::time::sleep(interval).await;
+        }
     });
 }
 
@@ -237,12 +257,12 @@ pub fn self_updating_fire_and_forget_polling_task<F>(interval: Duration, task: F
 where
     F: Fn(&mut Duration) + Send + 'static,
 {
-    thread::spawn(move || {
+    tokio::task::spawn(async move {
         let mut interval = interval;
         loop {
             task(&mut interval);
 
-            thread::sleep(interval);
+            tokio::time::sleep(interval).await;
         }
     });
 }
@@ -252,10 +272,12 @@ where
     D: Fn() -> Duration + Send + 'static,
     F: Fn() + Send + 'static,
 {
-    thread::spawn(move || loop {
-        task();
+    tokio::task::spawn(async move {
+        loop {
+            task();
 
-        thread::sleep(interval_fetcher());
+            tokio::time::sleep(interval_fetcher()).await;
+        }
     });
 }
 
