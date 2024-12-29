@@ -1,12 +1,15 @@
-use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering::SeqCst;
-use std::time::Duration;
-use tokio::time::sleep;
 use crate::tokio::{
     fire_and_forget_polling_task, self_updating_fire_and_forget_polling_task,
     variable_fire_and_forget_polling_task,
 };
+use std::{
+    sync::{
+        atomic::{AtomicU64, Ordering::SeqCst},
+        Arc,
+    },
+    time::Duration,
+};
+use tokio::time::sleep;
 
 #[tokio::test]
 async fn polls_and_can_exit() {

@@ -42,26 +42,29 @@ async fn slow_poll_exits_early() {
     {
         let _task = PollingTaskBuilder::new(Duration::from_millis(0))
             .track_for_clean_exit_within(Duration::from_millis(300))
-            .self_updating_task_with_checker(
-                move |checker| {
-                    let tx_clone = tx.clone();
-                    let tx_exit_clone = tx_exit.clone();
-                    async move {
-                        tx_clone.lock().unwrap().take().unwrap().send(true).unwrap();
+            .self_updating_task_with_checker(move |checker| {
+                let tx_clone = tx.clone();
+                let tx_exit_clone = tx_exit.clone();
+                async move {
+                    tx_clone.lock().unwrap().take().unwrap().send(true).unwrap();
 
-                        loop {
-                            if !checker.is_running() {
-                                break;
-                            }
+                    loop {
+                        if !checker.is_running() {
+                            break;
                         }
-
-                        // Prevent issues caused by cycling a second time.
-                        tx_exit_clone.lock().unwrap().take().unwrap().send(true).unwrap();
-                        Duration::from_secs(5000)
                     }
 
-                },
-            );
+                    // Prevent issues caused by cycling a second time.
+                    tx_exit_clone
+                        .lock()
+                        .unwrap()
+                        .take()
+                        .unwrap()
+                        .send(true)
+                        .unwrap();
+                    Duration::from_secs(5000)
+                }
+            });
 
         // Guarantee we polled at least once
         rx.await.unwrap();

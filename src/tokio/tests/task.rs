@@ -78,12 +78,24 @@ async fn drop_while_running_blocks() {
                 let start_tx_clone = start_tx.clone();
                 let stop_tx_clone = stop_tx.clone();
                 async move {
-                    start_tx_clone.lock().unwrap().take().unwrap().send(()).unwrap();
+                    start_tx_clone
+                        .lock()
+                        .unwrap()
+                        .take()
+                        .unwrap()
+                        .send(())
+                        .unwrap();
 
                     // Lazy, give enough delay to allow signal to propagate. Intentionally using the
                     // wrong sleep here.
                     std::thread::sleep(Duration::from_millis(200));
-                    stop_tx_clone.lock().unwrap().take().unwrap().send(()).unwrap();
+                    stop_tx_clone
+                        .lock()
+                        .unwrap()
+                        .take()
+                        .unwrap()
+                        .send(())
+                        .unwrap();
                     ()
                 }
             });
@@ -120,7 +132,13 @@ async fn long_poll_exits_early() {
                             }
                         }
 
-                        tx_exit_clone.lock().unwrap().take().unwrap().send(true).unwrap();
+                        tx_exit_clone
+                            .lock()
+                            .unwrap()
+                            .take()
+                            .unwrap()
+                            .send(true)
+                            .unwrap();
                     }
                 }
             });

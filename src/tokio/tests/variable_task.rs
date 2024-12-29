@@ -69,7 +69,13 @@ async fn slow_poll_exits_early() {
                             }
                         }
 
-                        tx_exit_clone.lock().unwrap().take().unwrap().send(true).unwrap();
+                        tx_exit_clone
+                            .lock()
+                            .unwrap()
+                            .take()
+                            .unwrap()
+                            .send(true)
+                            .unwrap();
                     }
                 },
             );
