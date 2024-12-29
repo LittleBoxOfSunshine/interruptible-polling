@@ -14,7 +14,7 @@ async fn update_observed_on_next_poll_with_early_exit() {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let tx = Mutex::new(Some(tx));
 
-    let _task = PollingTaskBuilder::new(Duration::from_millis(0))
+    let _task = PollingTaskBuilder::new()
         .wait_for_clean_exit(None)
         .self_updating_task(move || {
             counter_clone.fetch_add(1, SeqCst);
@@ -36,7 +36,7 @@ async fn slow_poll_exits_early() {
     let tx_exit = Mutex::new(Some(tx_exit));
 
     {
-        let _task = PollingTaskBuilder::new(Duration::from_millis(0))
+        let _task = PollingTaskBuilder::new()
             .wait_for_clean_exit(None)
             .self_updating_task_with_checker(move |checker| {
                 tx.lock().unwrap().take().unwrap().send(true).unwrap();

@@ -26,7 +26,7 @@ async fn update_observed_on_next_poll_with_early_exit() {
         }
     };
 
-    let _task = PollingTaskBuilder::new(Duration::from_millis(0))
+    let _task = PollingTaskBuilder::new()
         .track_for_clean_exit_within(Duration::from_millis(300))
         .variable_task(increases_on_second_call, move || {
             let counter = counter_clone.clone();
@@ -52,7 +52,7 @@ async fn slow_poll_exits_early() {
     let tx_exit = Arc::new(Mutex::new(Some(tx_exit)));
 
     {
-        let _task = PollingTaskBuilder::new(Duration::from_millis(0))
+        let _task = PollingTaskBuilder::new()
             .track_for_clean_exit_within(Duration::from_millis(300))
             .variable_task_with_checker(
                 || async { Duration::from_secs(5000) },

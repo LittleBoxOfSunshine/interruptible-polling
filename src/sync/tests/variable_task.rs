@@ -23,7 +23,7 @@ async fn update_observed_on_next_poll_with_early_exit() {
         }
     };
 
-    let _task = PollingTaskBuilder::new(Duration::from_millis(0))
+    let _task = PollingTaskBuilder::new()
         .wait_for_clean_exit(None)
         .variable_task(increases_on_second_call, move || {
             counter_clone.fetch_add(1, SeqCst);
@@ -44,7 +44,7 @@ async fn slow_poll_exits_early() {
     let tx_exit = Mutex::new(Some(tx_exit));
 
     {
-        let _task = PollingTaskBuilder::new(Duration::from_millis(0))
+        let _task = PollingTaskBuilder::new()
             .wait_for_clean_exit(None)
             .variable_task_with_checker(
                 || Duration::from_secs(5000),

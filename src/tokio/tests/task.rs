@@ -9,11 +9,22 @@ use std::{
 use tokio::time::sleep;
 
 #[tokio::test]
-async fn poll() {
-    let (counter, _task) = get_task_and_timer(true);
+async fn cancel() {
+    let (_counter, task) = wait_case().await;
+    let _test = task.cancel().await;
+}
+
+async fn wait_case() -> (Arc<AtomicU64>, PollingTaskHandle) {
+    let (counter, task) = get_task_and_timer(true);
     sleep(Duration::from_millis(50)).await;
 
     assert!(counter.load(SeqCst) > 1);
+    (counter, task)
+}
+
+#[tokio::test]
+async fn poll() {
+    let _ = wait_case().await;
 }
 
 #[tokio::test]
@@ -28,13 +39,13 @@ fn get_task_and_timer(wait: bool) -> (Arc<AtomicU64>, PollingTaskHandle) {
     let counter = Arc::new(AtomicU64::new(0));
     let counter_clone = counter.clone();
 
-    let mut task_builder = PollingTaskBuilder::new(Duration::from_millis(1));
+    let mut task_builder = PollingTaskBuilder::new();
 
     if wait {
         task_builder = task_builder.track_for_clean_exit_within(Duration::from_millis(100));
     }
 
-    let task = task_builder.task(move || {
+    let task = task_builder.task(Duration::from_millis(1), move || {
         let counter = counter_clone.clone();
         async move {
             counter.fetch_add(1, SeqCst);
@@ -51,9 +62,9 @@ async fn early_clean_exit() {
     let counter = Arc::new(AtomicU64::new(0));
     let counter_clone = counter.clone();
 
-    let _task = PollingTaskBuilder::new(Duration::from_millis(5000))
+    let _task = PollingTaskBuilder::new()
         .track_for_clean_exit_within(Duration::from_millis(100))
-        .task(move || {
+        .task(Duration::from_millis(5000), move || {
             let counter = counter_clone.clone();
             async move {
                 counter.fetch_add(1, SeqCst);
@@ -72,9 +83,9 @@ async fn drop_while_running_blocks() {
     let stop_tx = Arc::new(Mutex::new(Some(stop_tx)));
 
     {
-        let _task = PollingTaskBuilder::new(Duration::from_millis(5000))
+        let _task = PollingTaskBuilder::new()
             .track_for_clean_exit_within(Duration::from_millis(500))
-            .task(move || {
+            .task(Duration::from_millis(5000), move || {
                 let start_tx_clone = start_tx.clone();
                 let stop_tx_clone = stop_tx.clone();
                 async move {
@@ -116,9 +127,9 @@ async fn long_poll_exits_early() {
     let tx_exit = Arc::new(Mutex::new(Some(tx_exit)));
 
     {
-        let _task = PollingTaskBuilder::new(Duration::from_millis(5000))
+        let _task = PollingTaskBuilder::new()
             .track_for_clean_exit_within(Duration::from_millis(100))
-            .task_with_checker(move |checker| {
+            .task_with_checker(Duration::from_millis(5000), move |checker| {
                 let tx_clone = tx.clone();
                 let tx_exit_clone = tx_exit.clone();
 
