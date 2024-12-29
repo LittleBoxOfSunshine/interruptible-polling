@@ -42,7 +42,6 @@ impl PollingTaskHandle {
 
             match self.timeout {
                 None => {
-                    // TODO: This whole mechanism needs test coverage
                     // If Err, the thread died before it could signal. There's nothing to handle
                     // here, we're just waiting until the thread exits.
                     let _ = self.receiver.recv();

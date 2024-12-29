@@ -40,7 +40,6 @@ impl PollingTaskHandle {
     ) -> Result<(), CancelPollingTaskTimeout> {
         cancellation_token.cancel();
 
-        // TODO: This whole mechanism needs test coverage
         if let Some(timeout) = timeout {
             if let Err(_) = tokio::time::timeout(timeout, async {
                 // If Err, the thread died before it could signal. There's nothing to handle
