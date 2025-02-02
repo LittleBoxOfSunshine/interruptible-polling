@@ -135,6 +135,8 @@
 //! example.
 //!
 //! ```
+//! # #[cfg(feature = "tokio")]
+//! # {
 //! # use std::time::Duration;
 //! # use serde_json::Value;
 //! # use std::io::Read;
@@ -160,6 +162,7 @@
 //!               }
 //!           }
 //!       });
+//! # }
 //! # }
 //! ```
 
