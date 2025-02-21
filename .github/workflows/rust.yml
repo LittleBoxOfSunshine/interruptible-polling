@@ -20,7 +20,7 @@ jobs:
         run: rustup update stable
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Format
-        run: cargo fmt --check --locked
+        run: cargo fmt --check
       - name: Clippy
         run: cargo clippy --tests -- --deny warnings
       - name: Docs
