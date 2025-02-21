@@ -18,6 +18,7 @@ async fn polls_and_can_exit() {
 
     fire_and_forget_polling_task(Duration::from_millis(10), move || {
         counter_clone.fetch_add(1, SeqCst);
+        async {}
     });
 
     sleep(Duration::from_millis(50)).await;
@@ -32,11 +33,14 @@ async fn self_updating_polls_and_can_exit() {
 
     self_updating_fire_and_forget_polling_task(move || {
         counter_clone.fetch_add(1, SeqCst);
+        let val = counter_clone.load(SeqCst);
 
-        if counter_clone.load(SeqCst) == 100 {
-            Duration::from_secs(1000000)
-        } else {
-            Duration::from_millis(0)
+        async move {
+            if val == 100 {
+                Duration::from_secs(1000000)
+            } else {
+                Duration::from_millis(0)
+            }
         }
     });
 

@@ -271,13 +271,14 @@ impl PollingTaskBuilder {
 }
 
 /// General purpose RAII polling task that executes a closure with a given frequency.
-pub fn fire_and_forget_polling_task<F>(interval: Duration, task: F)
+pub fn fire_and_forget_polling_task<F, Fut>(interval: Duration, task: F)
 where
-    F: Fn() + Send + 'static,
+    F: Fn() -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send,
 {
     tokio::task::spawn(async move {
         loop {
-            task();
+            task().await;
 
             // There's no need to support a fast exit here, because there is no handle head for this
             // thread. Instead, we rely on that rust will kill the thread when the exe exits. This is
@@ -290,13 +291,14 @@ where
 /// Executes a closure with a given frequency where the closure knows the next interval period.
 /// An example would be a polling thread monitoring for updates to a config file that includes a
 /// setting for how often to poll the file.
-pub fn self_updating_fire_and_forget_polling_task<F>(task: F)
+pub fn self_updating_fire_and_forget_polling_task<F, Fut>(task: F)
 where
-    F: Fn() -> Duration + Send + 'static,
+    F: Fn() -> Fut + Send + 'static,
+    Fut: Future<Output = Duration> + Send,
 {
     tokio::task::spawn(async move {
         loop {
-            tokio::time::sleep(task()).await;
+            tokio::time::sleep(task().await).await;
         }
     });
 }
